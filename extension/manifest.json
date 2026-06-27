@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "ContextBubble",
+  "version": "0.1.0",
+  "description": "Shows timestamped concept bubbles on YouTube learning videos.",
+  "permissions": ["activeTab"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ContextBubble"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "https://www.youtube.com/watch*"
+  ]
+}

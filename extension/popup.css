@@ -1,0 +1,33 @@
+body {
+  min-width: 240px;
+  margin: 0;
+  padding: 14px;
+  color: #171717;
+  font: 14px/1.4 Arial, sans-serif;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+p {
+  margin: 10px 0 0;
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: #1a73e8;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
