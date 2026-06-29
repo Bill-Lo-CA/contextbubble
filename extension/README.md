@@ -19,9 +19,10 @@ python backend/server.py
 3. Click **Load unpacked**.
 4. Select this `extension/` directory.
 5. Open a YouTube watch page.
-6. Optionally choose a `.vtt` or `.srt` subtitle file in the extension popup.
-7. Click **Analyze Video**.
-8. Play to a returned bubble timestamp.
+6. Choose a learner level.
+7. Optionally choose a `.vtt` or `.srt` subtitle file in the extension popup.
+8. Click **Analyze Video**.
+9. Play to a returned bubble timestamp.
 
 Expected result: one backend-provided ContextBubble appears near the lower-right of the page.
 
@@ -29,4 +30,5 @@ Expected result: one backend-provided ContextBubble appears near the lower-right
 
 - The live caption panel reads visible `.ytp-caption-segment` text only as a debug preview.
 - Real analysis should use a complete timestamped transcript from upload, fixture, or backend processing.
+- The backend API currently stores transcripts and analyses in memory.
 - Heavy ASR work belongs in the backend, not the extension.

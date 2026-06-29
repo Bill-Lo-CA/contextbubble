@@ -15,7 +15,14 @@ p {
   margin: 10px 0 0;
 }
 
-input {
+label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 700;
+}
+
+input,
+select {
   width: 100%;
   box-sizing: border-box;
   margin-bottom: 10px;

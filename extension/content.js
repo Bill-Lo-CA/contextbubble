@@ -6,6 +6,7 @@
   let shownKeys = new Set();
   let activeVideoId;
   let activeBubble;
+  let hideTimer;
   let lastCaptionText = "";
   let expanded = false;
 
@@ -22,6 +23,7 @@
     document.getElementById("contextbubble-root")?.remove();
     activeBubble = null;
     expanded = false;
+    clearTimeout(hideTimer);
   }
 
   function readCaptionText() {
@@ -51,19 +53,24 @@
     }
   }
 
-  async function startAnalysis() {
+  async function startAnalysis({ learnerLevel, transcriptId }) {
     const videoId = getVideoId();
     if (!videoId) throw new Error("Open a YouTube watch page first.");
 
-    const startResponse = await fetch(`${API_BASE}/api/analyze`, {
+    const startResponse = await fetch(`${API_BASE}/api/analyses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ video_id: videoId }),
+      body: JSON.stringify({
+        video_id: videoId,
+        transcript_id: transcriptId,
+        learner_level: learnerLevel,
+        force_refresh: false,
+      }),
     });
     if (!startResponse.ok) throw new Error("Backend did not start analysis.");
 
     const started = await startResponse.json();
-    const resultResponse = await fetch(`${API_BASE}/api/analysis/${started.analysis_id}`);
+    const resultResponse = await fetch(`${API_BASE}/api/analyses/${started.analysis_id}`);
     if (!resultResponse.ok) throw new Error("Backend did not return analysis.");
 
     const result = await resultResponse.json();
@@ -84,6 +91,7 @@
       <div class="contextbubble-text"></div>
       <div class="contextbubble-actions">
         <button type="button" data-action="expand">Expand</button>
+        <button type="button" data-action="known">I know this</button>
         <button type="button" data-action="dismiss">Dismiss</button>
       </div>
     `;
@@ -92,6 +100,9 @@
     renderText(root);
     root.addEventListener("click", handleBubbleClick);
     document.body.appendChild(root);
+    hideTimer = setTimeout(() => {
+      if (!expanded && activeBubble?.id === bubble.id) removeBubble();
+    }, 8000);
   }
 
   function renderText(root) {
@@ -105,7 +116,7 @@
 
   function handleBubbleClick(event) {
     const action = event.target?.dataset?.action;
-    if (action === "dismiss") removeBubble();
+    if (action === "dismiss" || action === "known") removeBubble();
     if (action === "expand") {
       expanded = !expanded;
       renderText(event.currentTarget);
@@ -117,7 +128,6 @@
     const videoId = getVideoId();
 
     if (!currentVideo || !videoId) return;
-    renderCaptionPanel(readCaptionText());
 
     if (activeVideoId !== videoId) {
       activeVideoId = videoId;
@@ -127,6 +137,9 @@
       expanded = false;
       removeBubble();
     }
+
+    if (activeBubble) return;
+    renderCaptionPanel(readCaptionText());
 
     const dueBubble = bubbles.find((bubble) => {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
@@ -141,7 +154,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "contextbubble:analyze") return false;
-    startAnalysis().then(sendResponse).catch((error) => {
+    startAnalysis(message).then(sendResponse).catch((error) => {
       sendResponse({ error: error.message });
     });
     return true;

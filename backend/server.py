@@ -1,10 +1,14 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import re
 import sys
+from urllib.parse import parse_qs, urlparse
 
 
+ANALYSIS_VERSION = "phase2-placeholder"
 ANALYSES = {}
+ANALYSIS_CACHE = {}
 TRANSCRIPTS = {}
 
 
@@ -61,18 +65,20 @@ def parse_subtitles(content):
 def transcript_bubbles(segments):
     bubbles = []
     used_text = set()
-    for segment in segments:
+    for index, segment in enumerate(segments, 1):
         text = segment["text"]
         if text in used_text or len(text.split()) < 4:
             continue
         used_text.add(text)
         concept = " ".join(text.split()[:4]).rstrip(".,:;!?")
         bubbles.append({
+            "id": f"bubble-{index:03d}",
             "concept": concept,
             "start_seconds": segment["start_seconds"],
             "short_explanation": f"This moment mentions: {text[:120]}",
             "expanded_explanation": "This placeholder will be replaced by concept detection, generation, and review.",
             "confidence": 0.5,
+            "review_status": "accepted",
         })
         if len(bubbles) == 3:
             break
@@ -82,11 +88,13 @@ def transcript_bubbles(segments):
 def demo_bubbles():
     return [
         {
+            "id": "bubble-001",
             "concept": "ContextBubble demo",
             "start_seconds": 5,
             "short_explanation": "This backend-provided bubble proves the extension can receive timestamped analysis.",
             "expanded_explanation": "The next slice can replace this fixture with subtitle parsing and the agent workflow.",
             "confidence": 1.0,
+            "review_status": "accepted",
         }
     ]
 
@@ -108,6 +116,7 @@ Cosine similarity compares vector direction.
     }]
     assert parse_subtitles(srt)[0]["start_seconds"] == 4.0
     assert len(transcript_bubbles(parse_subtitles(vtt + "\n" + srt))) >= 1
+    assert hashlib.sha256(b"demo").hexdigest()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -131,28 +140,58 @@ class Handler(BaseHTTPRequestHandler):
             segments = parse_subtitles(content)
             if not segments:
                 return self.send_json({"error": "no subtitle segments found"}, 400)
-            TRANSCRIPTS[video_id] = {
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
+            transcript_id = f"transcript-{content_hash[:12]}"
+            TRANSCRIPTS[transcript_id] = {
+                "video_id": video_id,
                 "filename": body.get("filename", ""),
                 "segments": segments,
+                "content_hash": content_hash,
             }
             return self.send_json({
+                "transcript_id": transcript_id,
                 "video_id": video_id,
                 "segment_count": len(segments),
-                "status": "ready",
+                "content_hash": content_hash,
             })
 
-        if self.path != "/api/analyze":
+        if self.path not in ("/api/analyses", "/api/analyze"):
             return self.send_json({"error": "not found"}, 404)
 
         video_id = body.get("video_id", "unknown")
-        analysis_id = f"analysis-{video_id}"
-        transcript = TRANSCRIPTS.get(video_id, {})
-        bubbles = transcript_bubbles(transcript.get("segments", []))
-        ANALYSES[analysis_id] = {"video_id": video_id, "bubbles": bubbles}
+        learner_level = body.get("learner_level", "beginner")
+        transcript_id = body.get("transcript_id", "")
+        transcript = TRANSCRIPTS.get(transcript_id, {})
+        content_hash = transcript.get("content_hash", "fixture")
+        cache_key = f"{video_id}:{content_hash}:{learner_level}:{ANALYSIS_VERSION}"
+        analysis_id = f"analysis-{hashlib.sha256(cache_key.encode()).hexdigest()[:12]}"
+
+        cached = ANALYSIS_CACHE.get(cache_key)
+        if cached and not body.get("force_refresh"):
+            ANALYSES[analysis_id] = cached
+        else:
+            ANALYSES[analysis_id] = {
+                "analysis_id": analysis_id,
+                "status": "completed",
+                "video_id": video_id,
+                "learner_level": learner_level,
+                "bubbles": transcript_bubbles(transcript.get("segments", [])),
+            }
+            ANALYSIS_CACHE[cache_key] = ANALYSES[analysis_id]
+
         self.send_json({"analysis_id": analysis_id, "status": "processing"})
 
     def do_GET(self):
-        match = re.fullmatch(r"/api/analysis/([^/]+)", self.path)
+        url = urlparse(self.path)
+        video_match = re.fullmatch(r"/api/videos/([^/]+)/analysis", url.path)
+        if video_match:
+            learner_level = parse_qs(url.query).get("learner_level", ["beginner"])[0]
+            for analysis in reversed(list(ANALYSIS_CACHE.values())):
+                if analysis["video_id"] == video_match.group(1) and analysis["learner_level"] == learner_level:
+                    return self.send_json(analysis)
+            return self.send_json({"status": "missing"}, 404)
+
+        match = re.fullmatch(r"/api/analyses/([^/]+)", url.path) or re.fullmatch(r"/api/analysis/([^/]+)", url.path)
         if not match:
             return self.send_json({"error": "not found"}, 404)
 
@@ -160,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         if not analysis:
             return self.send_json({"status": "missing"}, 404)
 
-        self.send_json({"status": "completed", **analysis})
+        self.send_json(analysis)
 
     def send_json(self, payload, status=200):
         data = json.dumps(payload).encode()
