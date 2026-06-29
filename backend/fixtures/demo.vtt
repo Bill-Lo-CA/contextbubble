@@ -1,0 +1,10 @@
+WEBVTT
+
+00:00:05.000 --> 00:00:08.000
+Embeddings are numeric representations of text.
+
+00:00:15.000 --> 00:00:19.000
+Cosine similarity compares whether two vectors point in similar directions.
+
+00:00:28.000 --> 00:00:32.000
+Retrieval augmented generation looks up relevant context before answering.

@@ -1,22 +1,50 @@
 const analyze = document.getElementById("analyze");
+const subtitle = document.getElementById("subtitle");
 const status = document.getElementById("status");
+const API_BASE = "http://127.0.0.1:8000";
+
+function getVideoId(tab) {
+  return new URL(tab.url).searchParams.get("v") || "";
+}
+
+async function uploadSubtitle(videoId) {
+  const file = subtitle.files?.[0];
+  if (!file) return "";
+
+  status.textContent = "Uploading subtitles...";
+  const response = await fetch(`${API_BASE}/api/subtitles`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      video_id: videoId,
+      filename: file.name,
+      content: await file.text(),
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Subtitle upload failed.");
+  return `${result.segment_count} subtitle segments ready. `;
+}
 
 analyze.addEventListener("click", async () => {
   analyze.disabled = true;
   status.textContent = "Analyzing...";
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) {
-    status.textContent = "No active tab.";
-    analyze.disabled = false;
-    return;
-  }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const videoId = tab ? getVideoId(tab) : "";
+    if (!tab?.id || !videoId) throw new Error("Open a YouTube watch page first.");
 
-  chrome.tabs.sendMessage(tab.id, { type: "contextbubble:analyze" }, (response) => {
+    const uploadStatus = await uploadSubtitle(videoId);
+    chrome.tabs.sendMessage(tab.id, { type: "contextbubble:analyze" }, (response) => {
+      analyze.disabled = false;
+      const error = chrome.runtime.lastError?.message || response?.error;
+      status.textContent = error
+        ? error
+        : `${uploadStatus}Ready: ${response.count} bubbles for ${response.videoId}.`;
+    });
+  } catch (error) {
+    status.textContent = error.message;
     analyze.disabled = false;
-    const error = chrome.runtime.lastError?.message || response?.error;
-    status.textContent = error
-      ? error
-      : `Ready: ${response.count} bubbles for ${response.videoId}.`;
-  });
+  }
 });

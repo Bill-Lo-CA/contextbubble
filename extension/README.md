@@ -19,8 +19,9 @@ python backend/server.py
 3. Click **Load unpacked**.
 4. Select this `extension/` directory.
 5. Open a YouTube watch page.
-6. Click **Analyze Video** in the extension popup.
-7. Play past 5 seconds.
+6. Optionally choose a `.vtt` or `.srt` subtitle file in the extension popup.
+7. Click **Analyze Video**.
+8. Play to a returned bubble timestamp.
 
 Expected result: one backend-provided ContextBubble appears near the lower-right of the page.
 
