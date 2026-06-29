@@ -6,6 +6,7 @@
   let shownKeys = new Set();
   let activeVideoId;
   let activeBubble;
+  let lastCaptionText = "";
   let expanded = false;
 
   function getVideoId() {
@@ -21,6 +22,33 @@
     document.getElementById("contextbubble-root")?.remove();
     activeBubble = null;
     expanded = false;
+  }
+
+  function readCaptionText() {
+    return Array.from(document.querySelectorAll(".ytp-caption-segment"))
+      .map((segment) => segment.textContent.trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function renderCaptionPanel(text) {
+    let panel = document.getElementById("contextbubble-caption");
+    if (!text) {
+      panel?.remove();
+      lastCaptionText = "";
+      return;
+    }
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "contextbubble-caption";
+      document.body.appendChild(panel);
+    }
+
+    if (text !== lastCaptionText) {
+      lastCaptionText = text;
+      panel.textContent = text;
+    }
   }
 
   async function startAnalysis() {
@@ -89,10 +117,13 @@
     const videoId = getVideoId();
 
     if (!currentVideo || !videoId) return;
+    renderCaptionPanel(readCaptionText());
+
     if (activeVideoId !== videoId) {
       activeVideoId = videoId;
       shownKeys = new Set();
       bubbles = [];
+      lastCaptionText = "";
       expanded = false;
       removeBubble();
     }
