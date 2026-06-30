@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -10,10 +11,12 @@ from urllib.parse import parse_qs, urlparse
 
 
 ANALYSIS_VERSION = "phase2-placeholder"
-DEFAULT_YTDLP_CMD = "$HOME/.local/bin/yt-dlp" if os.path.exists("$HOME/.local/bin/yt-dlp") else "yt-dlp"
+HOME = Path.home()
+LOCAL_YTDLP_CMD = HOME / ".local/bin/yt-dlp"
+DEFAULT_YTDLP_CMD = str(LOCAL_YTDLP_CMD) if LOCAL_YTDLP_CMD.exists() else "yt-dlp"
 YTDLP_CMD = os.environ.get("YTDLP_CMD", DEFAULT_YTDLP_CMD)
-WHISPER_CMD = os.environ.get("WHISPER_CMD", "$HOME/tools/whisper.cpp/build/bin/whisper-cli")
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "$HOME/tools/whisper.cpp/models/ggml-base.en.bin")
+WHISPER_CMD = os.environ.get("WHISPER_CMD", str(HOME / "tools/whisper.cpp/build/bin/whisper-cli"))
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/models/ggml-base.en.bin"))
 ANALYSES = {}
 ANALYSIS_CACHE = {}
 TRANSCRIPTS = {}

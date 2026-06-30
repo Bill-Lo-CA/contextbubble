@@ -18,12 +18,12 @@ and placeholder bubbles on the page.
 - whisper.cpp
 - A whisper.cpp model file
 
-The current local defaults are:
+The backend defaults to tools under your home directory:
 
 ```sh
-YTDLP_CMD=$HOME/.local/bin/yt-dlp
-WHISPER_CMD=$HOME/tools/whisper.cpp/build/bin/whisper-cli
-WHISPER_MODEL=$HOME/tools/whisper.cpp/models/ggml-base.en.bin
+YTDLP_CMD="$HOME/.local/bin/yt-dlp"
+WHISPER_CMD="$HOME/tools/whisper.cpp/build/bin/whisper-cli"
+WHISPER_MODEL="$HOME/tools/whisper.cpp/models/ggml-base.en.bin"
 ```
 
 If those paths exist, the backend uses them automatically. Override them only
@@ -31,10 +31,14 @@ when your tools live elsewhere.
 
 ## Install Tools
 
-Install or update `yt-dlp`:
+Install or update `yt-dlp` from the release binary:
 
 ```sh
-python3 -m pip install -U yt-dlp --user
+mkdir -p "$HOME/.local/bin"
+curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+  -o "$HOME/.local/bin/yt-dlp"
+chmod a+rx "$HOME/.local/bin/yt-dlp"
+"$HOME/.local/bin/yt-dlp" --version
 ```
 
 Install `ffmpeg` with your system package manager if it is missing:
