@@ -3,6 +3,7 @@
 
   let video;
   let bubbles = [];
+  let transcriptSegments = [];
   let shownKeys = new Set();
   let activeVideoId;
   let activeBubble;
@@ -53,16 +54,37 @@
     }
   }
 
-  async function startAnalysis({ learnerLevel, transcriptId }) {
+  async function fetchYoutubeTranscript(videoId, currentVideo) {
+    const response = await fetch(`${API_BASE}/api/youtube-subtitles`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        video_id: videoId,
+        current_time: currentVideo.currentTime,
+        playback_rate: currentVideo.playbackRate || 1,
+        chunk_seconds: 60,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Subtitle retrieval failed.");
+    return result;
+  }
+
+  async function startAnalysis({ learnerLevel }) {
     const videoId = getVideoId();
+    const currentVideo = findVideo();
     if (!videoId) throw new Error("Open a YouTube watch page first.");
+    if (!currentVideo) throw new Error("No YouTube video element found.");
+
+    const transcript = await fetchYoutubeTranscript(videoId, currentVideo);
+    transcriptSegments = transcript.segments || [];
 
     const startResponse = await fetch(`${API_BASE}/api/analyses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         video_id: videoId,
-        transcript_id: transcriptId,
+        transcript_id: transcript.transcript_id,
         learner_level: learnerLevel,
         force_refresh: false,
       }),
@@ -77,7 +99,13 @@
     bubbles = result.bubbles || [];
     shownKeys = new Set();
     removeBubble();
-    return { videoId, count: bubbles.length };
+    return {
+      videoId,
+      count: bubbles.length,
+      segmentCount: transcriptSegments.length,
+      chunkStart: transcript.chunk_start_seconds,
+      chunkEnd: transcript.chunk_end_seconds,
+    };
   }
 
   function showBubble(bubble) {
@@ -133,13 +161,17 @@
       activeVideoId = videoId;
       shownKeys = new Set();
       bubbles = [];
+      transcriptSegments = [];
       lastCaptionText = "";
       expanded = false;
       removeBubble();
     }
 
     if (activeBubble) return;
-    renderCaptionPanel(readCaptionText());
+    const activeSegment = transcriptSegments.find((segment) => {
+      return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
+    });
+    renderCaptionPanel(activeSegment?.text || readCaptionText());
 
     const dueBubble = bubbles.find((bubble) => {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

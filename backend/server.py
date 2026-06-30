@@ -1,12 +1,19 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from urllib.parse import parse_qs, urlparse
 
 
 ANALYSIS_VERSION = "phase2-placeholder"
+DEFAULT_YTDLP_CMD = "$HOME/.local/bin/yt-dlp" if os.path.exists("$HOME/.local/bin/yt-dlp") else "yt-dlp"
+YTDLP_CMD = os.environ.get("YTDLP_CMD", DEFAULT_YTDLP_CMD)
+WHISPER_CMD = os.environ.get("WHISPER_CMD", "$HOME/tools/whisper.cpp/build/bin/whisper-cli")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "$HOME/tools/whisper.cpp/models/ggml-base.en.bin")
 ANALYSES = {}
 ANALYSIS_CACHE = {}
 TRANSCRIPTS = {}
@@ -27,7 +34,7 @@ def clean_caption_text(lines):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def parse_subtitles(content):
+def parse_subtitles(content, offset_seconds=0):
     segments = []
     lines = content.replace("\ufeff", "").splitlines()
     index = 0
@@ -54,12 +61,95 @@ def parse_subtitles(content):
         text = clean_caption_text(text_lines)
         if text:
             segments.append({
-                "start_seconds": parse_time(start_text),
-                "end_seconds": parse_time(end_text),
+                "start_seconds": parse_time(start_text) + offset_seconds,
+                "end_seconds": parse_time(end_text) + offset_seconds,
                 "text": text,
             })
 
     return segments
+
+
+def store_transcript(video_id, filename, content):
+    segments = parse_subtitles(content)
+    if not segments:
+        return None
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    transcript_id = f"transcript-{content_hash[:12]}"
+    TRANSCRIPTS[transcript_id] = {
+        "video_id": video_id,
+        "filename": filename,
+        "segments": segments,
+        "content_hash": content_hash,
+    }
+    return {
+        "transcript_id": transcript_id,
+        "video_id": video_id,
+        "segment_count": len(segments),
+        "content_hash": content_hash,
+    }
+
+
+def validate_video_id(video_id):
+    if not re.fullmatch(r"[-_A-Za-z0-9]{6,20}", video_id):
+        raise ValueError("invalid YouTube video id")
+
+
+def command_error(prefix, error):
+    output = "\n".join(part for part in (error.stderr, error.stdout) if part).strip()
+    if len(output) > 1200:
+        output = f"{output[:1200]}..."
+    return f"{prefix}: {output or error}"
+
+
+def format_section_time(seconds):
+    seconds = max(0, int(seconds))
+    hours = seconds // 3600
+    minutes = seconds % 3600 // 60
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def transcribe_youtube_audio(video_id, start_seconds=0, chunk_seconds=60):
+    validate_video_id(video_id)
+    start_seconds = max(0, int(float(start_seconds)))
+    chunk_seconds = min(180, max(15, int(float(chunk_seconds))))
+    end_seconds = start_seconds + chunk_seconds
+
+    with tempfile.TemporaryDirectory(prefix="contextbubble-") as tmpdir:
+        audio_base = os.path.join(tmpdir, "%(id)s")
+        subprocess.run([
+            YTDLP_CMD,
+            "-f", "bestaudio/best",
+            "--download-sections", f"*{format_section_time(start_seconds)}-{format_section_time(end_seconds)}",
+            "-x",
+            "--audio-format", "wav",
+            "-o", f"{audio_base}.%(ext)s",
+            f"https://www.youtube.com/watch?v={video_id}",
+        ], check=True, capture_output=True, text=True, timeout=600)
+
+        audio_path = ""
+        for filename in os.listdir(tmpdir):
+            if filename.endswith(".wav"):
+                audio_path = os.path.join(tmpdir, filename)
+                break
+
+        if not audio_path:
+            raise FileNotFoundError("yt-dlp did not produce a wav audio file")
+
+        transcript_base = os.path.join(tmpdir, "transcript")
+        subprocess.run([
+            WHISPER_CMD,
+            "-m", WHISPER_MODEL,
+            "-f", audio_path,
+            "-l", "en",
+            "-ovtt",
+            "-of", transcript_base,
+            "-ng",
+            "-np",
+        ], check=True, capture_output=True, text=True, timeout=900)
+
+        with open(f"{transcript_base}.vtt", encoding="utf-8") as file:
+            return f"{video_id}.{start_seconds}-{end_seconds}.whisper.vtt", file.read(), start_seconds, end_seconds
 
 
 def transcript_bubbles(segments):
@@ -115,7 +205,15 @@ Cosine similarity compares vector direction.
         "text": "Embeddings are numeric representations of text.",
     }]
     assert parse_subtitles(srt)[0]["start_seconds"] == 4.0
+    assert parse_subtitles(vtt, 10)[0]["start_seconds"] == 11.0
+    assert format_section_time(65) == "00:01:05"
     assert len(transcript_bubbles(parse_subtitles(vtt + "\n" + srt))) >= 1
+    assert store_transcript("demo", "demo.vtt", vtt)["segment_count"] == 1
+    try:
+        transcribe_youtube_audio("../../bad")
+        raise AssertionError("invalid video id accepted")
+    except ValueError:
+        pass
     assert hashlib.sha256(b"demo").hexdigest()
 
 
@@ -136,23 +234,37 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/subtitles":
             video_id = body.get("video_id", "unknown")
-            content = body.get("content", "")
-            segments = parse_subtitles(content)
-            if not segments:
+            transcript = store_transcript(video_id, body.get("filename", ""), body.get("content", ""))
+            if not transcript:
                 return self.send_json({"error": "no subtitle segments found"}, 400)
-            content_hash = hashlib.sha256(content.encode()).hexdigest()
-            transcript_id = f"transcript-{content_hash[:12]}"
-            TRANSCRIPTS[transcript_id] = {
-                "video_id": video_id,
-                "filename": body.get("filename", ""),
-                "segments": segments,
-                "content_hash": content_hash,
-            }
+            return self.send_json(transcript)
+
+        if self.path == "/api/youtube-subtitles":
+            video_id = body.get("video_id", "unknown")
+            try:
+                current_time = float(body.get("current_time", 0))
+                chunk_seconds = float(body.get("chunk_seconds", 60))
+                chunk_start = int(current_time // chunk_seconds * chunk_seconds)
+                filename, content, start_seconds, end_seconds = transcribe_youtube_audio(video_id, chunk_start, chunk_seconds)
+            except ValueError as error:
+                return self.send_json({"error": str(error)}, 400)
+            except FileNotFoundError as error:
+                return self.send_json({"error": f"YouTube audio transcription failed: {error}"}, 500)
+            except subprocess.CalledProcessError as error:
+                return self.send_json({"error": command_error("YouTube audio transcription failed", error)}, 500)
+            except subprocess.TimeoutExpired as error:
+                return self.send_json({"error": f"YouTube audio transcription timed out: {error}"}, 500)
+
+            segments = parse_subtitles(content, start_seconds)
+            transcript = store_transcript(video_id, filename, content)
+            if not transcript:
+                return self.send_json({"error": "Whisper returned no usable subtitle segments"}, 500)
+            TRANSCRIPTS[transcript["transcript_id"]]["segments"] = segments
             return self.send_json({
-                "transcript_id": transcript_id,
-                "video_id": video_id,
-                "segment_count": len(segments),
-                "content_hash": content_hash,
+                **transcript,
+                "chunk_start_seconds": start_seconds,
+                "chunk_end_seconds": end_seconds,
+                "segments": segments,
             })
 
         if self.path not in ("/api/analyses", "/api/analyze"):
