@@ -19,6 +19,7 @@
   let lastCaptionText = "";
   let expanded = false;
   let analysisRunning = false;
+  let apiToken = "";
 
   function getVideoId() {
     return new URLSearchParams(location.search).get("v") || "";
@@ -107,65 +108,66 @@
     bubbles.sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
-  async function fetchYoutubeTranscript(videoId, currentVideo, currentTime) {
-    const response = await fetch(`${API_BASE}/api/youtube-subtitles`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        video_id: videoId,
-        current_time: currentTime,
-        playback_rate: currentVideo.playbackRate || 1,
-        chunk_seconds: CHUNK_SECONDS,
-      }),
+  function authHeaders() {
+    return {
+      "authorization": `Bearer ${apiToken}`,
+      "content-type": "application/json",
+    };
+  }
+
+  async function fetchJson(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: authHeaders(),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Subtitle retrieval failed.");
+    if (!response.ok) throw new Error(result.error || "Backend request failed.");
     return result;
   }
 
-  async function analyzeChunkAt(videoId, currentVideo, learnerLevel, currentTime) {
-    const transcript = await fetchYoutubeTranscript(videoId, currentVideo, currentTime);
-    const receivedAt = currentVideo.currentTime;
-    appendTranscriptSegments(transcript.segments || []);
-
-    const startResponse = await fetch(`${API_BASE}/api/analyses`, {
+  async function fetchDemoTranscript(videoId) {
+    return fetchJson("/api/demo-transcript", {
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         video_id: videoId,
-        transcript_id: transcript.transcript_id,
+      }),
+    });
+  }
+
+  async function startBackendAnalysis(videoId, transcriptId, learnerLevel) {
+    return fetchJson("/api/analyses", {
+      method: "POST",
+      body: JSON.stringify({
+        video_id: videoId,
+        transcript_id: transcriptId,
         learner_level: learnerLevel,
         force_refresh: false,
       }),
     });
-    if (!startResponse.ok) throw new Error("Backend did not start analysis.");
-
-    const started = await startResponse.json();
-    const resultResponse = await fetch(`${API_BASE}/api/analyses/${started.analysis_id}`);
-    if (!resultResponse.ok) throw new Error("Backend did not return analysis.");
-
-    const result = await resultResponse.json();
-    appendBubbles(result.bubbles || []);
-    return {
-      requestedAt: transcript.request_time_seconds,
-      receivedAt,
-      respondedAt: findVideo()?.currentTime ?? receivedAt,
-      chunkStart: transcript.chunk_start_seconds,
-      chunkEnd: transcript.chunk_end_seconds,
-      segmentCount: transcript.segments?.length || 0,
-      bubbleCount: result.bubbles?.length || 0,
-    };
   }
 
-  async function startAnalysis({ learnerLevel }) {
+  async function pollAnalysis(analysisId) {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const result = await fetchJson(`/api/analyses/${analysisId}`);
+      if (result.status === "completed") return result;
+      if (result.status === "failed") throw new Error(result.message || "Analysis failed.");
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    throw new Error("Analysis timed out.");
+  }
+
+  async function startAnalysis({ learnerLevel, apiToken: token }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
+    apiToken = token || "";
 
     const videoId = getVideoId();
     const currentVideo = findVideo();
     try {
       if (!videoId) throw new Error("Open a YouTube watch page first.");
       if (!currentVideo) throw new Error("No YouTube video element found.");
+      if (!apiToken) throw new Error("Missing API token.");
 
       transcriptSegments = [];
       bubbles = [];
@@ -173,25 +175,17 @@
       clearCaptionLog();
       removeBubble();
 
-      const analyzed = [];
-      let currentTime = currentVideo.currentTime;
-      for (let index = 0; index <= FOLLOWUP_CHUNKS; index += 1) {
-        const chunk = await analyzeChunkAt(videoId, currentVideo, learnerLevel, currentTime);
-        analyzed.push(chunk);
-        currentTime = chunk.chunkEnd + 0.1;
-      }
+      const transcript = await fetchDemoTranscript(videoId);
+      appendTranscriptSegments(transcript.segments || []);
+      const started = await startBackendAnalysis(videoId, transcript.transcript_id, learnerLevel);
+      const result = await pollAnalysis(started.analysis_id);
+      appendBubbles(result.bubbles || []);
 
-      const latest = analyzed.at(-1);
       return {
         videoId,
         count: bubbles.length,
-        chunksAnalyzed: analyzed.length,
         segmentCount: transcriptSegments.length,
-        requestedAt: analyzed[0]?.requestedAt,
-        receivedAt: latest?.receivedAt,
-        respondedAt: latest?.respondedAt,
-        chunkStart: analyzed[0]?.chunkStart,
-        chunkEnd: latest?.chunkEnd,
+        analysisId: started.analysis_id,
       };
     } finally {
       analysisRunning = false;
@@ -258,15 +252,24 @@
       removeBubble();
     }
 
-    if (activeBubble) return;
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
     appendCaptionLog(activeSegment?.text || readCaptionText(), currentVideo.currentTime, activeSegment);
 
+    if (activeBubble) return;
+    for (const bubble of bubbles) {
+      const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
+      if (!shownKeys.has(key) && currentVideo.currentTime > bubble.start_seconds + 1.5) {
+        shownKeys.add(key);
+      }
+    }
+
     const dueBubble = bubbles.find((bubble) => {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
-      return !shownKeys.has(key) && currentVideo.currentTime >= bubble.start_seconds;
+      return !shownKeys.has(key)
+        && currentVideo.currentTime >= bubble.start_seconds - 0.3
+        && currentVideo.currentTime <= bubble.start_seconds + 1.5;
     });
 
     if (dueBubble) {

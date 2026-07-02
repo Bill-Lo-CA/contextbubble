@@ -1,11 +1,17 @@
 const analyze = document.getElementById("analyze");
 const openCaptions = document.getElementById("open-captions");
+const apiToken = document.getElementById("api-token");
 const learnerLevel = document.getElementById("learner-level");
 const status = document.getElementById("status");
 const STATUS_KEY = "contextbubbleStatus";
+const TOKEN_KEY = "contextbubbleApiToken";
 
 chrome.storage.session.get(STATUS_KEY, (saved) => {
   if (saved[STATUS_KEY]) status.textContent = saved[STATUS_KEY];
+});
+
+chrome.storage.local.get(TOKEN_KEY, (saved) => {
+  if (saved[TOKEN_KEY]) apiToken.value = saved[TOKEN_KEY];
 });
 
 function setStatus(text) {
@@ -26,8 +32,10 @@ function formatTime(seconds) {
 }
 
 function sendAnalyzeMessage(tabId) {
+  chrome.storage.local.set({ [TOKEN_KEY]: apiToken.value });
   const message = {
     type: "contextbubble:analyze-v2",
+    apiToken: apiToken.value,
     learnerLevel: learnerLevel.value,
   };
 
@@ -40,8 +48,6 @@ function sendAnalyzeMessage(tabId) {
 }
 
 async function analyzeTab(tabId) {
-  await chrome.scripting.insertCSS({ target: { tabId }, files: ["styles.css"] });
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
   return sendAnalyzeMessage(tabId);
 }
 
@@ -67,6 +73,7 @@ analyze.addEventListener("click", async () => {
 
   try {
     const tab = await getActiveYoutubeTab();
+    if (!apiToken.value) throw new Error("Paste the backend API token first.");
 
     const { error, response } = await analyzeTab(tab.id);
     if (response?.status === "already-running") {

@@ -3,7 +3,7 @@
   "name": "ContextBubble",
   "version": "0.1.0",
   "description": "Shows timestamped concept bubbles on YouTube learning videos.",
-  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "permissions": ["activeTab", "sidePanel", "storage"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "ContextBubble"

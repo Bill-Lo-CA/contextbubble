@@ -3,10 +3,11 @@
 ContextBubble is a Chromium extension prototype for showing timestamped learning
 notes on YouTube videos.
 
-The current prototype detects the active YouTube video, sends the current
-playback time to a local backend, downloads the matching 30-second audio chunk
-with `yt-dlp`, transcribes it with whisper.cpp, and shows timestamped subtitles
-and placeholder bubbles on the page.
+The current prototype detects the active YouTube video, loads a stored transcript
+fixture, starts a local analysis job, polls until completion, and shows reviewed
+timestamped bubbles on the page. Captions are logged in the Chrome Side Panel.
+The backend still keeps a user-initiated 30-second whisper.cpp chunk path as a
+prototype fallback.
 
 ## Requirements
 
@@ -24,10 +25,13 @@ The backend defaults to tools under your home directory:
 YTDLP_CMD="$HOME/.local/bin/yt-dlp"
 WHISPER_CMD="$HOME/tools/whisper.cpp/build/bin/whisper-cli"
 WHISPER_MODEL="$HOME/tools/whisper.cpp/models/ggml-base.en.bin"
+WHISPER_NO_GPU=0
 ```
 
 If those paths exist, the backend uses them automatically. Override them only
-when your tools live elsewhere.
+when your tools live elsewhere. By default, whisper.cpp is allowed to use GPU
+when the binary was built with GPU support. Set `WHISPER_NO_GPU=1` to force CPU
+mode.
 
 ## Install Tools
 
@@ -63,7 +67,7 @@ From the repo root:
 python backend/server.py
 ```
 
-The backend listens on:
+The backend listens on `127.0.0.1` and prints a bearer token:
 
 ```text
 http://127.0.0.1:8000
@@ -76,15 +80,12 @@ http://127.0.0.1:8000
 3. Click **Load unpacked**.
 4. Select the `extension/` directory.
 5. Open a YouTube watch page.
-6. Choose a learner level.
+6. Paste the backend API token into the popup.
 7. Click **Analyze Video**.
 
-The extension asks the backend to process the 30-second chunk around the current
-playback time, then immediately processes the next 30-second chunk. The backend
-offsets chunk-local transcript timestamps back into the full video timeline.
-When the result returns, the extension reads the current `video.currentTime`
-again and displays the matching absolute-timestamp subtitle, so playback can
-stay synchronized even if processing takes a while.
+The extension starts an analysis job and polls the backend until it completes.
+Bubbles display only inside a short timing window near their timestamp; skipped
+old bubbles are not replayed after seeking.
 
 ## Validate
 
@@ -96,9 +97,10 @@ node --check extension/popup.js
 
 ## Current Limits
 
-- Processes only the current 30-second chunk and one follow-up chunk.
+- Live ASR fallback processes only the current 30-second chunk and one follow-up chunk.
 - No background queue or prefetch yet.
-- Transcript and analysis cache are in memory.
-- Bubble content is placeholder text derived from transcript segments.
+- The primary extension path currently uses the stored demo transcript fixture.
+- The analysis cache persists to a local JSON file.
+- The agent workflow is heuristic until a model provider is wired in.
 - The extension does not download media directly; backend `yt-dlp` does.
 - YouTube download behavior depends on `yt-dlp` staying current.

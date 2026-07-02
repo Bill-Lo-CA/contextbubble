@@ -4,23 +4,52 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 from urllib.parse import parse_qs, urlparse
 
 
-ANALYSIS_VERSION = "phase2-placeholder"
+ANALYSIS_VERSION = "agent-mvp-heuristic-v1"
 HOME = Path.home()
+DATA_DIR = Path(__file__).resolve().parent / ".contextbubble"
+CACHE_FILE = DATA_DIR / "analysis-cache.json"
 LOCAL_YTDLP_CMD = HOME / ".local/bin/yt-dlp"
 DEFAULT_YTDLP_CMD = str(LOCAL_YTDLP_CMD) if LOCAL_YTDLP_CMD.exists() else "yt-dlp"
 YTDLP_CMD = os.environ.get("YTDLP_CMD", DEFAULT_YTDLP_CMD)
 WHISPER_CMD = os.environ.get("WHISPER_CMD", str(HOME / "tools/whisper.cpp/build/bin/whisper-cli"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/models/ggml-base.en.bin"))
+WHISPER_NO_GPU = os.environ.get("WHISPER_NO_GPU", "").lower() in ("1", "true", "yes")
+API_TOKEN = os.environ.get("CONTEXTBUBBLE_TOKEN") or secrets.token_urlsafe(24)
 ANALYSES = {}
 ANALYSIS_CACHE = {}
 TRANSCRIPTS = {}
 DEFAULT_CHUNK_SECONDS = 30
+MAX_SUBTITLE_BYTES = 5 * 1024 * 1024
+MAX_JSON_BYTES = 32 * 1024
+ASR_LOCK = threading.Lock()
+STATE_LOCK = threading.Lock()
+
+
+def load_cache():
+    if not CACHE_FILE.exists():
+        return {}
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_cache():
+    DATA_DIR.mkdir(exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as file:
+        json.dump(ANALYSIS_CACHE, file, indent=2)
+
+
+ANALYSIS_CACHE.update(load_cache())
 
 
 def parse_time(value):
@@ -36,6 +65,13 @@ def clean_caption_text(lines):
     text = " ".join(line.strip() for line in lines if line.strip())
     text = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def add_segment_ids(segments):
+    return [
+        {"id": f"segment-{index:03d}", **segment}
+        for index, segment in enumerate(segments, 1)
+    ]
 
 
 def parse_subtitles(content, offset_seconds=0):
@@ -70,7 +106,7 @@ def parse_subtitles(content, offset_seconds=0):
                 "text": text,
             })
 
-    return segments
+    return add_segment_ids(segments)
 
 
 def store_transcript(video_id, filename, content):
@@ -78,7 +114,7 @@ def store_transcript(video_id, filename, content):
     if not segments:
         return None
     content_hash = hashlib.sha256(content.encode()).hexdigest()
-    transcript_id = f"transcript-{content_hash[:12]}"
+    transcript_id = f"transcript-{video_id}-{content_hash[:12]}"
     TRANSCRIPTS[transcript_id] = {
         "video_id": video_id,
         "filename": filename,
@@ -99,10 +135,7 @@ def validate_video_id(video_id):
 
 
 def command_error(prefix, error):
-    output = "\n".join(part for part in (error.stderr, error.stdout) if part).strip()
-    if len(output) > 1200:
-        output = f"{output[:1200]}..."
-    return f"{prefix}: {output or error}"
+    return f"{prefix}. Check backend logs for details."
 
 
 def format_section_time(seconds):
@@ -119,78 +152,175 @@ def transcribe_youtube_audio(video_id, start_seconds=0, chunk_seconds=60):
     chunk_seconds = min(180, max(15, int(float(chunk_seconds))))
     end_seconds = start_seconds + chunk_seconds
 
-    with tempfile.TemporaryDirectory(prefix="contextbubble-") as tmpdir:
-        audio_base = os.path.join(tmpdir, "%(id)s")
-        subprocess.run([
-            YTDLP_CMD,
-            "-f", "bestaudio/best",
-            "--download-sections", f"*{format_section_time(start_seconds)}-{format_section_time(end_seconds)}",
-            "-x",
-            "--audio-format", "wav",
-            "-o", f"{audio_base}.%(ext)s",
-            f"https://www.youtube.com/watch?v={video_id}",
-        ], check=True, capture_output=True, text=True, timeout=600)
+    if not ASR_LOCK.acquire(blocking=False):
+        raise RuntimeError("another ASR job is already running")
+    try:
+        with tempfile.TemporaryDirectory(prefix="contextbubble-") as tmpdir:
+            audio_base = os.path.join(tmpdir, "%(id)s")
+            subprocess.run([
+                YTDLP_CMD,
+                "-f", "bestaudio/best",
+                "--download-sections", f"*{format_section_time(start_seconds)}-{format_section_time(end_seconds)}",
+                "-x",
+                "--audio-format", "wav",
+                "-o", f"{audio_base}.%(ext)s",
+                f"https://www.youtube.com/watch?v={video_id}",
+            ], check=True, capture_output=True, text=True, timeout=600)
 
-        audio_path = ""
-        for filename in os.listdir(tmpdir):
-            if filename.endswith(".wav"):
-                audio_path = os.path.join(tmpdir, filename)
-                break
+            audio_path = ""
+            for filename in os.listdir(tmpdir):
+                if filename.endswith(".wav"):
+                    audio_path = os.path.join(tmpdir, filename)
+                    break
 
-        if not audio_path:
-            raise FileNotFoundError("yt-dlp did not produce a wav audio file")
+            if not audio_path:
+                raise FileNotFoundError("yt-dlp did not produce a wav audio file")
 
-        transcript_base = os.path.join(tmpdir, "transcript")
-        subprocess.run([
-            WHISPER_CMD,
-            "-m", WHISPER_MODEL,
-            "-f", audio_path,
-            "-l", "en",
-            "-ovtt",
-            "-of", transcript_base,
-            "-ng",
-            "-np",
-        ], check=True, capture_output=True, text=True, timeout=900)
+            transcript_base = os.path.join(tmpdir, "transcript")
+            whisper_args = [
+                WHISPER_CMD,
+                "-m", WHISPER_MODEL,
+                "-f", audio_path,
+                "-l", "en",
+                "-ovtt",
+                "-of", transcript_base,
+                "-np",
+            ]
+            if WHISPER_NO_GPU:
+                whisper_args.append("-ng")
+            subprocess.run(whisper_args, check=True, capture_output=True, text=True, timeout=900)
 
-        with open(f"{transcript_base}.vtt", encoding="utf-8") as file:
-            return f"{video_id}.{start_seconds}-{end_seconds}.whisper.vtt", file.read(), start_seconds, end_seconds
+            with open(f"{transcript_base}.vtt", encoding="utf-8") as file:
+                return f"{video_id}.{start_seconds}-{end_seconds}.whisper.vtt", file.read(), start_seconds, end_seconds
+    finally:
+        ASR_LOCK.release()
 
 
-def transcript_bubbles(segments):
-    bubbles = []
-    used_text = set()
-    for index, segment in enumerate(segments, 1):
+def word_count(text):
+    return len((text or "").split())
+
+
+def truncate_words(text, limit):
+    words = (text or "").split()
+    return " ".join(words[:limit])
+
+
+def concept_agent(segments, learner_level):
+    keywords = (
+        "embedding", "embeddings", "cosine similarity", "retrieval augmented generation",
+        "retrieval", "generation", "vector", "vectors", "transcript", "model",
+    )
+    candidates = []
+    used = set()
+    for segment in segments:
         text = segment["text"]
-        if text in used_text or len(text.split()) < 4:
+        lowered = text.lower()
+        concept = next((keyword for keyword in keywords if keyword in lowered), "")
+        if not concept and len(text.split()) >= 4:
+            concept = " ".join(text.split()[:3]).strip(".,:;!?").lower()
+        concept_key = concept.lower()
+        if not concept or concept_key in used:
             continue
-        used_text.add(text)
-        concept = " ".join(text.split()[:4]).rstrip(".,:;!?")
-        bubbles.append({
-            "id": f"bubble-{index:03d}",
+        used.add(concept_key)
+        candidates.append({
             "concept": concept,
+            "anchor_segment_id": segment["id"],
+            "source_segment_ids": [segment["id"]],
             "start_seconds": segment["start_seconds"],
-            "short_explanation": f"This moment mentions: {text[:120]}",
-            "expanded_explanation": "This placeholder will be replaced by concept detection, generation, and review.",
-            "confidence": 0.5,
-            "review_status": "accepted",
+            "short_explanation": truncate_words(f"In this video, {concept} appears in the transcript: {text}", 50),
+            "expanded_explanation": truncate_words(f"For a {learner_level} learner, use this moment as the anchor for understanding how {concept} is being used in context.", 120),
+            "confidence": 0.72,
         })
-        if len(bubbles) == 3:
+        if len(candidates) == 8:
             break
-    return bubbles or demo_bubbles()
+    return candidates
 
 
-def demo_bubbles():
-    return [
-        {
-            "id": "bubble-001",
-            "concept": "ContextBubble demo",
-            "start_seconds": 5,
-            "short_explanation": "This backend-provided bubble proves the extension can receive timestamped analysis.",
-            "expanded_explanation": "The next slice can replace this fixture with subtitle parsing and the agent workflow.",
-            "confidence": 1.0,
+def reviewer_agent(candidate, segments, learner_level):
+    segment_by_id = {segment["id"]: segment for segment in segments}
+    anchor = segment_by_id.get(candidate.get("anchor_segment_id"))
+    accepted = bool(anchor) and candidate["concept"].lower() in anchor["text"].lower()
+    if not accepted and anchor:
+        accepted = any(word in anchor["text"].lower() for word in candidate["concept"].lower().split())
+    return {
+        **candidate,
+        "review_status": "accepted" if accepted else "rejected",
+        "review_reason": "Grounded in transcript segment." if accepted else "Not grounded in transcript segment.",
+    }
+
+
+def validate_bubbles(reviewed, segments):
+    segment_by_id = {segment["id"]: segment for segment in segments}
+    accepted = []
+    used_concepts = set()
+    for candidate in reviewed:
+        concept = candidate.get("concept", "").strip()
+        anchor = segment_by_id.get(candidate.get("anchor_segment_id"))
+        if not concept or not anchor:
+            continue
+        if candidate.get("review_status") != "accepted":
+            continue
+        if candidate.get("start_seconds") != anchor["start_seconds"]:
+            continue
+        if word_count(candidate.get("short_explanation")) > 50:
+            continue
+        if word_count(candidate.get("expanded_explanation")) > 120:
+            continue
+        confidence = candidate.get("confidence")
+        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            continue
+        concept_key = concept.lower()
+        if concept_key in used_concepts:
+            continue
+        if accepted and candidate["start_seconds"] - accepted[-1]["start_seconds"] < 30:
+            continue
+        used_concepts.add(concept_key)
+        accepted.append({
+            "id": f"bubble-{len(accepted) + 1:03d}",
+            "concept": concept,
+            "anchor_segment_id": anchor["id"],
+            "source_segment_ids": candidate.get("source_segment_ids", [anchor["id"]]),
+            "start_seconds": anchor["start_seconds"],
+            "short_explanation": candidate["short_explanation"],
+            "expanded_explanation": candidate.get("expanded_explanation", ""),
+            "confidence": confidence,
             "review_status": "accepted",
+            "review_reason": candidate.get("review_reason", ""),
+        })
+        if len(accepted) == 8:
+            break
+    return accepted
+
+
+def run_analysis_job(analysis_id, cache_key, video_id, learner_level, transcript):
+    try:
+        segments = transcript.get("segments", [])
+        candidates = concept_agent(segments, learner_level)
+        reviewed = [reviewer_agent(candidate, segments, learner_level) for candidate in candidates]
+        bubbles = validate_bubbles(reviewed, segments)
+        if not bubbles:
+            candidates = concept_agent(segments, learner_level)
+            reviewed = [reviewer_agent(candidate, segments, learner_level) for candidate in candidates]
+            bubbles = validate_bubbles(reviewed, segments)
+        result = {
+            "analysis_id": analysis_id,
+            "status": "completed",
+            "video_id": video_id,
+            "learner_level": learner_level,
+            "bubbles": bubbles,
         }
-    ]
+        with STATE_LOCK:
+            ANALYSES[analysis_id] = result
+            ANALYSIS_CACHE[cache_key] = result
+            save_cache()
+    except Exception as error:
+        with STATE_LOCK:
+            ANALYSES[analysis_id] = {
+                "analysis_id": analysis_id,
+                "status": "failed",
+                "error_code": "ANALYSIS_FAILED",
+                "message": str(error),
+            }
 
 
 def self_check():
@@ -204,6 +334,7 @@ Embeddings are numeric representations of text.
 Cosine similarity compares vector direction.
 """
     assert parse_subtitles(vtt) == [{
+        "id": "segment-001",
         "start_seconds": 1.0,
         "end_seconds": 3.5,
         "text": "Embeddings are numeric representations of text.",
@@ -212,7 +343,9 @@ Cosine similarity compares vector direction.
     assert parse_subtitles(vtt, 10)[0]["start_seconds"] == 11.0
     assert parse_subtitles(srt, 120)[0]["end_seconds"] == 126.25
     assert format_section_time(65) == "00:01:05"
-    assert len(transcript_bubbles(parse_subtitles(vtt + "\n" + srt))) >= 1
+    segments = parse_subtitles(vtt + "\n" + srt)
+    reviewed = [reviewer_agent(candidate, segments, "beginner") for candidate in concept_agent(segments, "beginner")]
+    assert validate_bubbles(reviewed, segments)
     assert store_transcript("demo", "demo.vtt", vtt)["segment_count"] == 1
     try:
         transcribe_youtube_audio("../../bad")
@@ -224,25 +357,55 @@ Cosine similarity compares vector direction.
 
 class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
-        self.send_header("access-control-allow-origin", "*")
+        origin = self.headers.get("origin", "")
+        if origin.startswith("chrome-extension://"):
+            self.send_header("access-control-allow-origin", origin)
         self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
-        self.send_header("access-control-allow-headers", "content-type")
+        self.send_header("access-control-allow-headers", "authorization, content-type")
         super().end_headers()
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.end_headers()
 
-    def do_POST(self):
+    def authorized(self):
+        return self.headers.get("authorization") == f"Bearer {API_TOKEN}"
+
+    def read_json_body(self, limit):
         length = int(self.headers.get("content-length", "0"))
-        body = json.loads(self.rfile.read(length) or b"{}")
+        if length > limit:
+            raise ValueError("request body too large")
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def do_POST(self):
+        if not self.authorized():
+            return self.send_json({"error": "unauthorized"}, 401)
+
+        try:
+            limit = MAX_SUBTITLE_BYTES if self.path == "/api/subtitles" else MAX_JSON_BYTES
+            body = self.read_json_body(limit)
+        except (ValueError, json.JSONDecodeError) as error:
+            return self.send_json({"error": str(error)}, 400)
 
         if self.path == "/api/subtitles":
             video_id = body.get("video_id", "unknown")
-            transcript = store_transcript(video_id, body.get("filename", ""), body.get("content", ""))
+            content = body.get("content", "")
+            if len(content.encode()) > MAX_SUBTITLE_BYTES:
+                return self.send_json({"error": "subtitle file too large"}, 400)
+            transcript = store_transcript(video_id, body.get("filename", ""), content)
             if not transcript:
                 return self.send_json({"error": "no subtitle segments found"}, 400)
             return self.send_json(transcript)
+
+        if self.path == "/api/demo-transcript":
+            video_id = body.get("video_id", "demo")
+            fixture = Path(__file__).resolve().parent / "fixtures/demo.vtt"
+            with open(fixture, encoding="utf-8") as file:
+                transcript = store_transcript(video_id, fixture.name, file.read())
+            return self.send_json({
+                **transcript,
+                "segments": TRANSCRIPTS[transcript["transcript_id"]]["segments"],
+            })
 
         if self.path == "/api/youtube-subtitles":
             video_id = body.get("video_id", "unknown")
@@ -253,6 +416,8 @@ class Handler(BaseHTTPRequestHandler):
                 filename, content, start_seconds, end_seconds = transcribe_youtube_audio(video_id, chunk_start, chunk_seconds)
             except ValueError as error:
                 return self.send_json({"error": str(error)}, 400)
+            except RuntimeError as error:
+                return self.send_json({"error": str(error)}, 429)
             except FileNotFoundError as error:
                 return self.send_json({"error": f"YouTube audio transcription failed: {error}"}, 500)
             except subprocess.CalledProcessError as error:
@@ -280,26 +445,35 @@ class Handler(BaseHTTPRequestHandler):
         learner_level = body.get("learner_level", "beginner")
         transcript_id = body.get("transcript_id", "")
         transcript = TRANSCRIPTS.get(transcript_id, {})
+        if not transcript:
+            return self.send_json({"error": "transcript not found"}, 404)
         content_hash = transcript.get("content_hash", "fixture")
         cache_key = f"{video_id}:{content_hash}:{learner_level}:{ANALYSIS_VERSION}"
         analysis_id = f"analysis-{hashlib.sha256(cache_key.encode()).hexdigest()[:12]}"
 
         cached = ANALYSIS_CACHE.get(cache_key)
         if cached and not body.get("force_refresh"):
-            ANALYSES[analysis_id] = cached
+            with STATE_LOCK:
+                ANALYSES[analysis_id] = cached
         else:
-            ANALYSES[analysis_id] = {
-                "analysis_id": analysis_id,
-                "status": "completed",
-                "video_id": video_id,
-                "learner_level": learner_level,
-                "bubbles": transcript_bubbles(transcript.get("segments", [])),
-            }
-            ANALYSIS_CACHE[cache_key] = ANALYSES[analysis_id]
+            with STATE_LOCK:
+                ANALYSES[analysis_id] = {
+                    "analysis_id": analysis_id,
+                    "status": "processing",
+                    "stage": "concept_agent",
+                }
+            threading.Thread(
+                target=run_analysis_job,
+                args=(analysis_id, cache_key, video_id, learner_level, transcript),
+                daemon=True,
+            ).start()
 
         self.send_json({"analysis_id": analysis_id, "status": "processing"})
 
     def do_GET(self):
+        if not self.authorized():
+            return self.send_json({"error": "unauthorized"}, 401)
+
         url = urlparse(self.path)
         video_match = re.fullmatch(r"/api/videos/([^/]+)/analysis", url.path)
         if video_match:
@@ -335,4 +509,5 @@ if __name__ == "__main__":
         raise SystemExit(0)
     server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
     print("ContextBubble backend on http://127.0.0.1:8000")
+    print(f"ContextBubble API token: {API_TOKEN}")
     server.serve_forever()

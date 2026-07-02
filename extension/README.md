@@ -19,16 +19,16 @@ python backend/server.py
 3. Click **Load unpacked**.
 4. Select this `extension/` directory.
 5. Open a YouTube watch page.
-6. Choose a learner level.
+6. Paste the backend API token into the popup.
 7. Click **Analyze Video**.
 8. Play to a returned bubble timestamp.
 
-Expected result: one backend-provided ContextBubble appears near the lower-right of the page.
+Expected result: reviewed ContextBubble bubbles appear near their configured timestamps. Captions appear in the Chrome Side Panel when **Open Captions** is clicked.
 
 ## Current Limits
 
-- The live caption panel reads visible `.ytp-caption-segment` text only as a debug preview.
-- The content script sends the current playback time to the backend.
-- The backend uses `yt-dlp` to download the current 60-second YouTube audio chunk, then runs whisper.cpp to produce timestamped subtitles.
-- The backend API currently stores transcripts and analyses in memory.
+- The Side Panel caption log reads visible `.ytp-caption-segment` text only as a debug preview until transcript segments are available.
+- The extension starts an analysis job and polls until it completes.
+- The backend can use `yt-dlp` and whisper.cpp for the current 30-second YouTube audio chunk as a prototype fallback.
+- The backend persists analysis cache to a local JSON file.
 - Heavy ASR work belongs in the backend, not the extension.
