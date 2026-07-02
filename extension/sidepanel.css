@@ -1,0 +1,44 @@
+body {
+  margin: 0;
+  background: #f7f8fa;
+  color: #171717;
+  font: 14px/1.4 Arial, sans-serif;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid #ddd;
+  background: #fff;
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+#captions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.caption {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.time {
+  margin-bottom: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+.empty {
+  color: #666;
+  padding: 16px 4px;
+}

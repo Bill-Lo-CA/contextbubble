@@ -3,7 +3,8 @@
   const API_BASE = "http://127.0.0.1:8000";
   const CHUNK_SECONDS = 30;
   const FOLLOWUP_CHUNKS = 1;
-  const CAPTION_ID = "contextbubble-caption-v2";
+  const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
+  const MAX_CAPTIONS = 120;
 
   globalThis.__contextbubbleCleanup?.();
   globalThis.__contextbubbleVersion = SCRIPT_VERSION;
@@ -50,36 +51,32 @@
     return `${hours}:${minutes}:${secs}`;
   }
 
-  function renderCaptionPanel(text, currentTime, segment) {
-    document.getElementById("contextbubble-caption")?.remove();
-    let panel = document.getElementById(CAPTION_ID);
+  function appendCaptionLog(text, currentTime, segment) {
     if (!text) {
-      panel?.remove();
       lastCaptionText = "";
       return;
-    }
-
-    if (!panel) {
-      panel = document.createElement("div");
-      panel.id = CAPTION_ID;
-      document.body.appendChild(panel);
     }
 
     const timeText = segment
       ? `video ${formatTime(currentTime)} · segment ${formatTime(segment.start_seconds)}-${formatTime(segment.end_seconds)}`
       : `video ${formatTime(currentTime)}`;
-    const panelText = `${timeText}\n${text}`;
+    const captionKey = segment
+      ? `${segment.start_seconds}:${segment.end_seconds}:${text}`
+      : text;
 
-    if (panelText !== lastCaptionText) {
-      lastCaptionText = panelText;
-      panel.textContent = "";
-      const time = document.createElement("div");
-      time.className = "contextbubble-caption-time";
-      time.textContent = timeText;
-      const body = document.createElement("div");
-      body.textContent = text;
-      panel.append(time, body);
+    if (captionKey !== lastCaptionText) {
+      lastCaptionText = captionKey;
+      chrome.storage.local.get(CAPTION_LOG_KEY, (saved) => {
+        const log = saved[CAPTION_LOG_KEY] || [];
+        log.push({ timeText, text, savedAt: Date.now() });
+        chrome.storage.local.set({ [CAPTION_LOG_KEY]: log.slice(-MAX_CAPTIONS) });
+      });
     }
+  }
+
+  function clearCaptionLog() {
+    lastCaptionText = "";
+    chrome.storage.local.set({ [CAPTION_LOG_KEY]: [] });
   }
 
   function appendTranscriptSegments(segments) {
@@ -173,6 +170,7 @@
       transcriptSegments = [];
       bubbles = [];
       shownKeys = new Set();
+      clearCaptionLog();
       removeBubble();
 
       const analyzed = [];
@@ -256,6 +254,7 @@
       transcriptSegments = [];
       lastCaptionText = "";
       expanded = false;
+      clearCaptionLog();
       removeBubble();
     }
 
@@ -263,7 +262,7 @@
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
-    renderCaptionPanel(activeSegment?.text || readCaptionText(), currentVideo.currentTime, activeSegment);
+    appendCaptionLog(activeSegment?.text || readCaptionText(), currentVideo.currentTime, activeSegment);
 
     const dueBubble = bubbles.find((bubble) => {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

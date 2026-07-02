@@ -1,4 +1,5 @@
 const analyze = document.getElementById("analyze");
+const openCaptions = document.getElementById("open-captions");
 const learnerLevel = document.getElementById("learner-level");
 const status = document.getElementById("status");
 const STATUS_KEY = "contextbubbleStatus";
@@ -44,14 +45,28 @@ async function analyzeTab(tabId) {
   return sendAnalyzeMessage(tabId);
 }
 
+async function getActiveYoutubeTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const videoId = tab ? getVideoId(tab) : "";
+  if (!tab?.id || !videoId) throw new Error("Open a YouTube watch page first.");
+  return tab;
+}
+
+openCaptions.addEventListener("click", async () => {
+  try {
+    const tab = await getActiveYoutubeTab();
+    await chrome.sidePanel.open({ tabId: tab.id });
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
 analyze.addEventListener("click", async () => {
   analyze.disabled = true;
   setStatus("Analyzing...");
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const videoId = tab ? getVideoId(tab) : "";
-    if (!tab?.id || !videoId) throw new Error("Open a YouTube watch page first.");
+    const tab = await getActiveYoutubeTab();
 
     const { error, response } = await analyzeTab(tab.id);
     if (response?.status === "already-running") {
