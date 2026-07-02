@@ -4,7 +4,7 @@ ContextBubble is a Chromium extension prototype for showing timestamped learning
 notes on YouTube videos.
 
 The current prototype detects the active YouTube video, sends the current
-playback time to a local backend, downloads the matching 60-second audio chunk
+playback time to a local backend, downloads the matching 30-second audio chunk
 with `yt-dlp`, transcribes it with whisper.cpp, and shows timestamped subtitles
 and placeholder bubbles on the page.
 
@@ -79,10 +79,12 @@ http://127.0.0.1:8000
 6. Choose a learner level.
 7. Click **Analyze Video**.
 
-The extension asks the backend to process the 60-second chunk around the current
-playback time. When the result returns, subtitles are displayed using the
-current video time, so playback can stay synchronized even if processing takes a
-while.
+The extension asks the backend to process the 30-second chunk around the current
+playback time, then immediately processes the next 30-second chunk. The backend
+offsets chunk-local transcript timestamps back into the full video timeline.
+When the result returns, the extension reads the current `video.currentTime`
+again and displays the matching absolute-timestamp subtitle, so playback can
+stay synchronized even if processing takes a while.
 
 ## Validate
 
@@ -94,7 +96,7 @@ node --check extension/popup.js
 
 ## Current Limits
 
-- Processes only the current 60-second chunk.
+- Processes only the current 30-second chunk and one follow-up chunk.
 - No background queue or prefetch yet.
 - Transcript and analysis cache are in memory.
 - Bubble content is placeholder text derived from transcript segments.

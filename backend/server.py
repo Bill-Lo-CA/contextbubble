@@ -20,6 +20,7 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/mo
 ANALYSES = {}
 ANALYSIS_CACHE = {}
 TRANSCRIPTS = {}
+DEFAULT_CHUNK_SECONDS = 30
 
 
 def parse_time(value):
@@ -209,6 +210,7 @@ Cosine similarity compares vector direction.
     }]
     assert parse_subtitles(srt)[0]["start_seconds"] == 4.0
     assert parse_subtitles(vtt, 10)[0]["start_seconds"] == 11.0
+    assert parse_subtitles(srt, 120)[0]["end_seconds"] == 126.25
     assert format_section_time(65) == "00:01:05"
     assert len(transcript_bubbles(parse_subtitles(vtt + "\n" + srt))) >= 1
     assert store_transcript("demo", "demo.vtt", vtt)["segment_count"] == 1
@@ -245,9 +247,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/youtube-subtitles":
             video_id = body.get("video_id", "unknown")
             try:
-                current_time = float(body.get("current_time", 0))
-                chunk_seconds = float(body.get("chunk_seconds", 60))
-                chunk_start = int(current_time // chunk_seconds * chunk_seconds)
+                request_time = float(body.get("current_time", 0))
+                chunk_seconds = float(body.get("chunk_seconds", DEFAULT_CHUNK_SECONDS))
+                chunk_start = int(request_time // chunk_seconds * chunk_seconds)
                 filename, content, start_seconds, end_seconds = transcribe_youtube_audio(video_id, chunk_start, chunk_seconds)
             except ValueError as error:
                 return self.send_json({"error": str(error)}, 400)
@@ -265,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
             TRANSCRIPTS[transcript["transcript_id"]]["segments"] = segments
             return self.send_json({
                 **transcript,
+                "request_time_seconds": request_time,
                 "chunk_start_seconds": start_seconds,
                 "chunk_end_seconds": end_seconds,
                 "segments": segments,
