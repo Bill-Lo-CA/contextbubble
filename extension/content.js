@@ -42,8 +42,12 @@
       .join(" ");
   }
 
-  function formatSeconds(seconds) {
-    return `${Math.round(seconds)}s`;
+  function formatTime(seconds) {
+    seconds = Math.max(0, Math.round(seconds || 0));
+    const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
+    const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
+    const secs = String(seconds % 60).padStart(2, "0");
+    return `${hours}:${minutes}:${secs}`;
   }
 
   function renderCaptionPanel(text, currentTime, segment) {
@@ -62,8 +66,8 @@
     }
 
     const timeText = segment
-      ? `video ${formatSeconds(currentTime)} · segment ${formatSeconds(segment.start_seconds)}-${formatSeconds(segment.end_seconds)}`
-      : `video ${formatSeconds(currentTime)}`;
+      ? `video ${formatTime(currentTime)} · segment ${formatTime(segment.start_seconds)}-${formatTime(segment.end_seconds)}`
+      : `video ${formatTime(currentTime)}`;
     const panelText = `${timeText}\n${text}`;
 
     if (panelText !== lastCaptionText) {

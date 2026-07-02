@@ -16,6 +16,14 @@ function getVideoId(tab) {
   return new URL(tab.url).searchParams.get("v") || "";
 }
 
+function formatTime(seconds) {
+  seconds = Math.max(0, Math.round(seconds || 0));
+  const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
+  const secs = String(seconds % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${secs}`;
+}
+
 function sendAnalyzeMessage(tabId) {
   const message = {
     type: "contextbubble:analyze-v2",
@@ -57,10 +65,10 @@ analyze.addEventListener("click", async () => {
       ? `${response.chunksAnalyzed} chunks analyzed. `
       : "";
     const chunkStatus = response?.chunkStart !== undefined
-      ? `Chunk ${Math.round(response.chunkStart)}-${Math.round(response.chunkEnd)}s. `
+      ? `Chunk ${formatTime(response.chunkStart)}-${formatTime(response.chunkEnd)}. `
       : "";
     const syncStatus = response?.requestedAt !== undefined && response?.receivedAt !== undefined
-      ? `Requested ${Math.round(response.requestedAt)}s, received ${Math.round(response.receivedAt)}s, replied ${Math.round(response.respondedAt)}s. `
+      ? `Requested ${formatTime(response.requestedAt)}, received ${formatTime(response.receivedAt)}, replied ${formatTime(response.respondedAt)}. `
       : "";
     setStatus(error || response?.error
       ? error || response.error
