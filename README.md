@@ -3,11 +3,11 @@
 ContextBubble is a Chromium extension prototype for showing timestamped learning
 notes on YouTube videos.
 
-The current prototype detects the active YouTube video, loads a stored transcript
-fixture, starts a local analysis job, polls until completion, and shows reviewed
-timestamped bubbles on the page. Captions are logged in the Chrome Side Panel.
-The backend still keeps a user-initiated 30-second whisper.cpp chunk path as a
-prototype fallback.
+The current prototype detects the active YouTube video, pulls YouTube captions
+with `yt-dlp` when available, starts a local analysis job, polls until
+completion, and shows reviewed timestamped bubbles on the page. Captions are
+logged in the Chrome Side Panel. If YouTube captions are unavailable, the
+backend falls back to a 30-second whisper.cpp chunk path.
 
 ## Requirements
 
@@ -83,9 +83,9 @@ http://127.0.0.1:8000
 6. Paste the backend API token into the popup.
 7. Click **Analyze Video**.
 
-The extension starts an analysis job and polls the backend until it completes.
-Bubbles display only inside a short timing window near their timestamp; skipped
-old bubbles are not replayed after seeking.
+The extension asks the backend for YouTube captions first, starts an analysis
+job, and polls until it completes. Bubbles display only inside a short timing
+window near their timestamp; skipped old bubbles are not replayed after seeking.
 
 ## Validate
 
@@ -97,9 +97,10 @@ node --check extension/popup.js
 
 ## Current Limits
 
-- Live ASR fallback processes only the current 30-second chunk and one follow-up chunk.
+- YouTube caption fetch depends on `yt-dlp` and caption availability.
+- Live ASR fallback processes only the current 30-second chunk.
 - No background queue or prefetch yet.
-- The primary extension path currently uses the stored demo transcript fixture.
+- The stored demo transcript fixture is only a local fallback.
 - The analysis cache persists to a local JSON file.
 - The agent workflow is heuristic until a model provider is wired in.
 - The extension does not download media directly; backend `yt-dlp` does.

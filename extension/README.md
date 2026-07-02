@@ -29,6 +29,6 @@ Expected result: reviewed ContextBubble bubbles appear near their configured tim
 
 - The Side Panel caption log reads visible `.ytp-caption-segment` text only as a debug preview until transcript segments are available.
 - The extension starts an analysis job and polls until it completes.
-- The backend can use `yt-dlp` and whisper.cpp for the current 30-second YouTube audio chunk as a prototype fallback.
+- The backend tries `yt-dlp` YouTube captions first, then falls back to a 30-second whisper.cpp chunk.
 - The backend persists analysis cache to a local JSON file.
 - Heavy ASR work belongs in the backend, not the extension.

@@ -146,6 +146,31 @@ def format_section_time(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def fetch_youtube_subtitles(video_id):
+    validate_video_id(video_id)
+    with tempfile.TemporaryDirectory(prefix="contextbubble-subs-") as tmpdir:
+        subprocess.run([
+            YTDLP_CMD,
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs", "en.*",
+            "--sub-format", "vtt",
+            "--skip-download",
+            "-o", os.path.join(tmpdir, "%(id)s.%(ext)s"),
+            f"https://www.youtube.com/watch?v={video_id}",
+        ], check=True, capture_output=True, text=True, timeout=120)
+
+        for filename in sorted(os.listdir(tmpdir)):
+            if filename.endswith(".vtt"):
+                path = os.path.join(tmpdir, filename)
+                with open(path, encoding="utf-8") as file:
+                    content = file.read()
+                if parse_subtitles(content):
+                    return filename, content
+
+    raise FileNotFoundError("yt-dlp did not produce a usable vtt subtitle file")
+
+
 def transcribe_youtube_audio(video_id, start_seconds=0, chunk_seconds=60):
     validate_video_id(video_id)
     start_seconds = max(0, int(float(start_seconds)))
@@ -358,10 +383,11 @@ Cosine similarity compares vector direction.
 class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
         origin = self.headers.get("origin", "")
-        if origin.startswith("chrome-extension://"):
+        if origin.startswith("chrome-extension://") or origin == "https://www.youtube.com":
             self.send_header("access-control-allow-origin", origin)
         self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
         self.send_header("access-control-allow-headers", "authorization, content-type")
+        self.send_header("access-control-allow-private-network", "true")
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -413,6 +439,24 @@ class Handler(BaseHTTPRequestHandler):
                 request_time = float(body.get("current_time", 0))
                 chunk_seconds = float(body.get("chunk_seconds", DEFAULT_CHUNK_SECONDS))
                 chunk_start = int(request_time // chunk_seconds * chunk_seconds)
+            except ValueError as error:
+                return self.send_json({"error": str(error)}, 400)
+
+            try:
+                filename, content = fetch_youtube_subtitles(video_id)
+                transcript = store_transcript(video_id, filename, content)
+                if not transcript:
+                    raise FileNotFoundError("YouTube subtitles had no usable segments")
+                return self.send_json({
+                    **transcript,
+                    "request_time_seconds": request_time,
+                    "subtitle_source": "youtube",
+                    "segments": TRANSCRIPTS[transcript["transcript_id"]]["segments"],
+                })
+            except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
+            try:
                 filename, content, start_seconds, end_seconds = transcribe_youtube_audio(video_id, chunk_start, chunk_seconds)
             except ValueError as error:
                 return self.send_json({"error": str(error)}, 400)
@@ -435,6 +479,7 @@ class Handler(BaseHTTPRequestHandler):
                 "request_time_seconds": request_time,
                 "chunk_start_seconds": start_seconds,
                 "chunk_end_seconds": end_seconds,
+                "subtitle_source": "whisper",
                 "segments": segments,
             })
 

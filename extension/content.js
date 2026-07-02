@@ -134,6 +134,17 @@
     });
   }
 
+  async function fetchYoutubeTranscript(videoId, currentTime) {
+    return fetchJson("/api/youtube-subtitles", {
+      method: "POST",
+      body: JSON.stringify({
+        video_id: videoId,
+        current_time: currentTime,
+        chunk_seconds: CHUNK_SECONDS,
+      }),
+    });
+  }
+
   async function startBackendAnalysis(videoId, transcriptId, learnerLevel) {
     return fetchJson("/api/analyses", {
       method: "POST",
@@ -175,7 +186,12 @@
       clearCaptionLog();
       removeBubble();
 
-      const transcript = await fetchDemoTranscript(videoId);
+      let transcript;
+      try {
+        transcript = await fetchYoutubeTranscript(videoId, currentVideo.currentTime || 0);
+      } catch (_error) {
+        transcript = await fetchDemoTranscript(videoId);
+      }
       appendTranscriptSegments(transcript.segments || []);
       const started = await startBackendAnalysis(videoId, transcript.transcript_id, learnerLevel);
       const result = await pollAnalysis(started.analysis_id);
