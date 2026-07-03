@@ -1,12 +1,14 @@
 const analyze = document.getElementById("analyze");
 const reanalyze = document.getElementById("reanalyze");
 const openCaptions = document.getElementById("open-captions");
-const apiToken = document.getElementById("api-token");
+const pair = document.getElementById("pair");
+const pairingCode = document.getElementById("pairing-code");
 const demoMode = document.getElementById("demo-mode");
 const learnerLevel = document.getElementById("learner-level");
 const status = document.getElementById("status");
+const API_BASE = "http://127.0.0.1:8000";
 const STATUS_KEY = "contextbubbleStatus";
-const TOKEN_KEY = "contextbubbleApiToken";
+const SESSION_TOKEN_KEY = "contextbubbleSessionToken";
 
 chrome.storage.session.get(STATUS_KEY, (saved) => {
   if (saved[STATUS_KEY]) status.textContent = saved[STATUS_KEY];
@@ -18,10 +20,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-chrome.storage.local.get(TOKEN_KEY, (saved) => {
-  if (saved[TOKEN_KEY]) apiToken.value = saved[TOKEN_KEY];
-});
-
 function setStatus(text) {
   status.textContent = text;
   chrome.storage.session.set({ [STATUS_KEY]: text });
@@ -31,11 +29,31 @@ function getVideoId(tab) {
   return new URL(tab.url).searchParams.get("v") || "";
 }
 
-function sendAnalyzeMessage(tabId, forceRefresh = false) {
-  chrome.storage.local.set({ [TOKEN_KEY]: apiToken.value });
+async function sessionToken() {
+  const saved = await chrome.storage.session.get(SESSION_TOKEN_KEY);
+  return saved[SESSION_TOKEN_KEY] || "";
+}
+
+async function pairBackend() {
+  const code = pairingCode.value.trim();
+  if (!code) throw new Error("Enter the backend pairing code.");
+  const response = await fetch(`${API_BASE}/api/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pairing_code: code }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Pairing failed.");
+  await chrome.storage.session.set({ [SESSION_TOKEN_KEY]: result.session_token });
+  pairingCode.value = "";
+  return result;
+}
+
+async function sendAnalyzeMessage(tabId, forceRefresh = false) {
+  const token = await sessionToken();
   const message = {
     type: "contextbubble:analyze-v2",
-    apiToken: apiToken.value,
+    sessionToken: token,
     demoMode: demoMode.checked,
     learnerLevel: learnerLevel.value,
     forceRefresh,
@@ -69,6 +87,19 @@ openCaptions.addEventListener("click", async () => {
   }
 });
 
+pair.addEventListener("click", async () => {
+  pair.disabled = true;
+  setStatus("Pairing backend...");
+  try {
+    await pairBackend();
+    setStatus("Backend paired for this browser session.");
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    pair.disabled = false;
+  }
+});
+
 async function runAnalyze(forceRefresh = false) {
   analyze.disabled = true;
   reanalyze.disabled = true;
@@ -76,11 +107,15 @@ async function runAnalyze(forceRefresh = false) {
 
   try {
     const tab = await getActiveYoutubeTab();
-    if (!apiToken.value) throw new Error("Paste the backend API token first.");
+    if (!await sessionToken()) throw new Error("Pair the backend first.");
 
     const { error, response } = await analyzeTab(tab.id, forceRefresh);
     if (response?.status === "already-running") {
       setStatus("Analysis is already running.");
+      return;
+    }
+    if (response?.status === "stale-result-discarded") {
+      setStatus("Analysis finished, but the page changed. Result discarded.");
       return;
     }
     setStatus(error || response?.error

@@ -78,7 +78,8 @@ From the repo root:
 python backend/server.py
 ```
 
-The backend listens on `127.0.0.1` and prints a bearer token:
+The backend listens on `127.0.0.1` and prints an admin bearer token plus a
+short pairing code:
 
 ```text
 http://127.0.0.1:8000
@@ -91,7 +92,7 @@ http://127.0.0.1:8000
 3. Click **Load unpacked**.
 4. Select the `extension/` directory.
 5. Open a YouTube watch page.
-6. Paste the backend API token into the popup.
+6. Enter the backend pairing code in the popup and click **Pair Backend**.
 7. Pick a learner level.
 8. Click **Analyze Video**.
 
@@ -119,6 +120,7 @@ node --check extension/sidepanel.js
 - Only one ASR preparation runs at a time in the local backend process.
 - The stored demo transcript fixture is only available through explicit Demo mode or the demo video allowlist.
 - Preparation jobs, chunks, transcripts, analyses, and bubbles persist in `backend/.contextbubble/contextbubble.sqlite3`.
+- The extension stores only a paired session token in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
 - External-tool failures are logged to `backend/.contextbubble/jobs.log` with bounded stderr tails.
 - The agent workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini.
 - The extension does not download media directly; backend `yt-dlp` does.

@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 API_VERSION = "2026-07-prepare-v1"
 ANALYSIS_VERSION = "agent-mvp-gemini-v2"
 HOME = Path.home()
-DATA_DIR = Path(__file__).resolve().parent / ".contextbubble"
+DATA_DIR = Path(os.environ.get("CONTEXTBUBBLE_DATA_DIR", Path(__file__).resolve().parent / ".contextbubble"))
 DB_FILE = DATA_DIR / "contextbubble.sqlite3"
 JOB_LOG_FILE = DATA_DIR / "jobs.log"
 MEDIA_DIR = DATA_DIR / "media"
@@ -40,6 +40,10 @@ DEMO_VIDEO_IDS = {item.strip() for item in os.environ.get("DEMO_VIDEO_IDS", "").
 LEARNER_LEVELS = {"beginner", "intermediate", "advanced"}
 AGENT_MODES = {"heuristic", "gemini"}
 API_TOKEN = os.environ.get("CONTEXTBUBBLE_TOKEN") or secrets.token_urlsafe(24)
+PAIRING_CODE = f"{secrets.randbelow(1_000_000):06d}"
+PAIRING_EXPIRES_AT = time.time() + 5 * 60
+SESSION_SECONDS = 8 * 60 * 60
+SESSION_TOKENS = {}
 DEFAULT_CHUNK_SECONDS = 30
 CHUNK_OVERLAP_SECONDS = 2
 MAX_SUBTITLE_BYTES = 5 * 1024 * 1024
@@ -51,15 +55,88 @@ TRANSCRIPTS = {}
 ANALYSES = {}
 
 
+def set_data_dir(path):
+    global DATA_DIR, DB_FILE, JOB_LOG_FILE, MEDIA_DIR
+    DATA_DIR = Path(path)
+    DB_FILE = DATA_DIR / "contextbubble.sqlite3"
+    JOB_LOG_FILE = DATA_DIR / "jobs.log"
+    MEDIA_DIR = DATA_DIR / "media"
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def iso_from_timestamp(timestamp):
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def prune_sessions():
+    now = time.time()
+    expired = [digest for digest, expires_at in SESSION_TOKENS.items() if expires_at <= now]
+    for digest in expired:
+        SESSION_TOKENS.pop(digest, None)
+
+
+def create_session_token():
+    token = secrets.token_urlsafe(32)
+    expires_at = time.time() + SESSION_SECONDS
+    SESSION_TOKENS[token_hash(token)] = expires_at
+    return token, expires_at
+
+
+def valid_bearer_token(header):
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return False
+    token = header[len(prefix):]
+    if secrets.compare_digest(token, API_TOKEN):
+        return True
+    prune_sessions()
+    digest = token_hash(token)
+    return any(secrets.compare_digest(digest, saved) for saved in SESSION_TOKENS)
+
+
+def pair_session(pairing_code):
+    if time.time() > PAIRING_EXPIRES_AT:
+        raise ValueError("pairing code expired")
+    if not secrets.compare_digest(str(pairing_code), PAIRING_CODE):
+        raise PermissionError("invalid pairing code")
+    return create_session_token()
+
+
+def expired_pairing_rejected():
+    global PAIRING_EXPIRES_AT
+    original = PAIRING_EXPIRES_AT
+    try:
+        PAIRING_EXPIRES_AT = time.time() - 1
+        try:
+            pair_session(PAIRING_CODE)
+            return False
+        except ValueError:
+            return True
+    finally:
+        PAIRING_EXPIRES_AT = original
+
+
 def connect_db():
     DATA_DIR.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=5)
     conn.row_factory = sqlite3.Row
+    conn.execute("pragma journal_mode=WAL")
+    conn.execute("pragma busy_timeout = 5000")
+    conn.execute("pragma foreign_keys = ON")
     return conn
+
+
+def ensure_column(conn, table, column, definition):
+    columns = {row["name"] for row in conn.execute(f"pragma table_info({table})")}
+    if column not in columns:
+        conn.execute(f"alter table {table} add column {column} {definition}")
 
 
 def init_db():
@@ -74,6 +151,7 @@ def init_db():
                 job_id text primary key,
                 video_id text not null,
                 learner_level text not null,
+                source_policy text not null default 'live',
                 status text not null,
                 stage text not null,
                 transcript_source text,
@@ -154,7 +232,26 @@ def init_db():
                 review_reason text,
                 primary key (analysis_id, bubble_id)
             );
+            create table if not exists schema_migrations (
+                name text primary key,
+                applied_at text not null
+            );
         """)
+        ensure_column(conn, "preparation_jobs", "source_policy", "text not null default 'live'")
+        conn.executescript("""
+            create index if not exists idx_preparation_jobs_lookup
+                on preparation_jobs(video_id, learner_level, source_policy, status, created_at);
+            create index if not exists idx_analyses_lookup
+                on analyses(video_id, learner_level, status, updated_at);
+            create index if not exists idx_transcript_sources_lookup
+                on transcript_sources(video_id, source, created_at);
+            create index if not exists idx_asr_chunks_status
+                on asr_chunks(job_id, status);
+        """)
+        conn.execute(
+            "insert or ignore into schema_migrations values (?, ?)",
+            ("2026-07-project-review-t002-t005", now_iso()),
+        )
 
 
 def validate_config():
@@ -345,13 +442,64 @@ def command_error(prefix, error):
     return f"{prefix}. Check {JOB_LOG_FILE} for details."
 
 
+class ExternalCommandError(RuntimeError):
+    def __init__(self, stage, command, error, chunk_index=None):
+        self.stage = stage
+        self.command = command
+        self.original = error
+        self.chunk_index = chunk_index
+        self.timeout = isinstance(error, subprocess.TimeoutExpired)
+        self.returncode = getattr(error, "returncode", None)
+        self.stderr = getattr(error, "stderr", "") or getattr(error, "output", "") or str(error)
+        super().__init__(self.error_code)
+
+    @property
+    def tool(self):
+        name = Path(str(self.command[0])).name.lower() if self.command else ""
+        if "yt-dlp" in name:
+            return "yt-dlp"
+        if "ffmpeg" in name:
+            return "ffmpeg"
+        if "ffprobe" in name:
+            return "ffprobe"
+        if "whisper" in name:
+            return "whisper"
+        return name
+
+    @property
+    def error_code(self):
+        if self.timeout:
+            return {
+                "yt-dlp": "YTDLP_TIMEOUT",
+                "ffmpeg": "FFMPEG_TIMEOUT",
+                "ffprobe": "FFPROBE_TIMEOUT",
+                "whisper": "WHISPER_TIMEOUT",
+            }.get(self.tool, "EXTERNAL_TOOL_TIMEOUT")
+        if self.stage == "fetching_captions":
+            return "YOUTUBE_CAPTIONS_FAILED"
+        if self.stage == "fetching_metadata":
+            return "VIDEO_METADATA_FAILED"
+        if self.stage == "downloading_audio":
+            return "YTDLP_AUDIO_FAILED"
+        if self.stage == "normalizing_audio":
+            return "AUDIO_NORMALIZATION_FAILED"
+        if self.stage == "transcribing" and self.tool == "ffmpeg":
+            return "AUDIO_CHUNK_FAILED"
+        if self.stage == "transcribing":
+            return "WHISPER_FAILED"
+        return "EXTERNAL_TOOL_FAILED"
+
+
 def log_job(job_id, stage, command, error=None, chunk_index=None, retry_count=0):
     DATA_DIR.mkdir(exist_ok=True)
     tail = ""
     code = None
     if error is not None:
         code = getattr(error, "returncode", None)
-        tail = (getattr(error, "stderr", "") or str(error))[-2000:]
+        stderr = getattr(error, "stderr", "") or getattr(error, "output", "") or str(error)
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        tail = str(stderr)[-2000:]
     entry = {
         "time": now_iso(),
         "job_id": job_id,
@@ -371,7 +519,7 @@ def run_command(args, job_id, stage, timeout, chunk_index=None):
         return subprocess.run(args, check=True, capture_output=True, text=True, timeout=timeout)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         log_job(job_id, stage, args, error, chunk_index)
-        raise
+        raise ExternalCommandError(stage, args, error, chunk_index) from error
 
 
 def format_section_time(seconds):
@@ -548,6 +696,49 @@ def merge_transcript_segments(segments, duration_seconds=None):
     return add_segment_ids(merged)
 
 
+def sentence_entries(segments, max_words=40):
+    entries = []
+    buffer = ""
+    source_ids = []
+    start_seconds = None
+    end_seconds = None
+
+    def emit(text):
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return
+        entries.append({
+            "id": f"sentence-{len(entries) + 1:03d}",
+            "start_seconds": start_seconds,
+            "end_seconds": end_seconds,
+            "text": text,
+            "source_segment_ids": list(dict.fromkeys(source_ids)),
+        })
+
+    for segment in segments:
+        if start_seconds is None:
+            start_seconds = segment["start_seconds"]
+        end_seconds = segment["end_seconds"]
+        source_ids.append(segment["id"])
+        buffer = f"{buffer} {segment['text']}".strip()
+        parts = re.findall(r"[^.!?。？！]+[.!?。？！]+|[^.!?。？！]+$", buffer)
+        complete_count = len(parts) if buffer.rstrip().endswith((".", "!", "?", "。", "？", "！")) else max(0, len(parts) - 1)
+        for sentence in parts[:complete_count]:
+            emit(sentence)
+            start_seconds = segment["start_seconds"]
+            source_ids = [segment["id"]]
+        buffer = "" if complete_count == len(parts) else parts[-1]
+        if word_count(buffer) >= max_words:
+            emit(buffer)
+            buffer = ""
+            start_seconds = None
+            source_ids = []
+
+    if buffer:
+        emit(buffer)
+    return entries
+
+
 def word_count(text):
     return len((text or "").split())
 
@@ -562,6 +753,31 @@ def transcript_for_prompt(segments):
         f"{segment['id']} [{segment['start_seconds']:.1f}-{segment['end_seconds']:.1f}] {segment['text']}"
         for segment in segments
     )
+
+
+def transcript_windows(segments, size=80, overlap=8):
+    if len(segments) <= size:
+        return [segments]
+    windows = []
+    step = max(1, size - overlap)
+    for start in range(0, len(segments), step):
+        window = segments[start:start + size]
+        if window:
+            windows.append(window)
+    return windows
+
+
+def context_segments(candidate, segments, radius=3):
+    segment_by_id = {segment["id"]: segment for segment in segments}
+    ids = set(candidate.get("source_segment_ids") or [])
+    if candidate.get("anchor_segment_id"):
+        ids.add(candidate["anchor_segment_id"])
+    indexes = [index for index, segment in enumerate(segments) if segment["id"] in ids]
+    if not indexes:
+        return segments[: min(len(segments), radius * 2 + 1)]
+    start = max(0, min(indexes) - radius)
+    end = min(len(segments), max(indexes) + radius + 1)
+    return [segment_by_id.get(segment["id"], segment) for segment in segments[start:end]]
 
 
 def extract_json(text):
@@ -689,14 +905,40 @@ def heuristic_reviewer_agent(candidate, segments, learner_level):
 
 
 def concept_agent(segments, learner_level):
+    return concept_candidates(segments, learner_level)[0]
+
+
+def concept_candidates(segments, learner_level):
     if AGENT_MODE == "gemini":
-        return gemini_concept_agent(segments, learner_level)
-    return heuristic_concept_agent(segments, learner_level)
+        candidates = []
+        per_window = []
+        seen = set()
+        windows = transcript_windows(segments)
+        for window in windows:
+            window_candidates = gemini_concept_agent(window, learner_level)
+            per_window.append(len(window_candidates))
+            for candidate in window_candidates:
+                key = (candidate.get("concept", "").lower(), candidate.get("anchor_segment_id"))
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(candidate)
+        metrics = {
+            "transcript_segment_count": len(segments),
+            "window_count": len(windows),
+            "candidates_per_window": per_window,
+        }
+        return sorted(candidates, key=lambda item: item.get("confidence", 0), reverse=True)[:24], metrics
+    candidates = heuristic_concept_agent(segments, learner_level)
+    return candidates, {
+        "transcript_segment_count": len(segments),
+        "window_count": 1,
+        "candidates_per_window": [len(candidates)],
+    }
 
 
 def reviewer_agent(candidate, segments, learner_level):
     if AGENT_MODE == "gemini":
-        return gemini_reviewer_agent(candidate, segments, learner_level)
+        return gemini_reviewer_agent(candidate, context_segments(candidate, segments), learner_level)
     return heuristic_reviewer_agent(candidate, segments, learner_level)
 
 
@@ -779,6 +1021,11 @@ def analysis_result(analysis_id):
             for row in rows
         ],
     }
+    if analysis["status"] == "completed" and analysis["message"]:
+        try:
+            result["analysis_metrics"] = json.loads(analysis["message"])
+        except json.JSONDecodeError:
+            pass
     ANALYSES[analysis_id] = result
     return result
 
@@ -804,13 +1051,14 @@ def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_re
 
     try:
         segments = transcript.get("segments", [])
-        candidates = concept_agent(segments, learner_level)
+        candidates, metrics = concept_candidates(segments, learner_level)
         with connect_db() as conn:
             conn.execute("update analyses set stage = ?, updated_at = ? where analysis_id = ?", ("reviewing", now_iso(), analysis_id))
         reviewed = [reviewer_agent(candidate, segments, learner_level) for candidate in candidates]
         with connect_db() as conn:
             conn.execute("update analyses set stage = ?, updated_at = ? where analysis_id = ?", ("validating", now_iso(), analysis_id))
         bubbles = validate_bubbles(reviewed, segments)
+        metrics["accepted_bubble_count"] = len(bubbles)
         result = {
             "analysis_id": analysis_id,
             "status": "completed",
@@ -818,11 +1066,12 @@ def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_re
             "video_id": video_id,
             "learner_level": learner_level,
             "bubbles": bubbles,
+            "analysis_metrics": metrics,
         }
         with connect_db() as conn:
             conn.execute(
-                "update analyses set status = ?, stage = ?, error_code = null, message = null, updated_at = ? where analysis_id = ?",
-                ("completed", "ready", now_iso(), analysis_id),
+                "update analyses set status = ?, stage = ?, error_code = null, message = ?, updated_at = ? where analysis_id = ?",
+                ("completed", "ready", json.dumps(metrics), now_iso(), analysis_id),
             )
             conn.executemany(
                 "insert into bubbles values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -863,6 +1112,54 @@ def update_job(job_id, **values):
         conn.execute(f"update preparation_jobs set {assignments} where job_id = ?", (*values.values(), job_id))
 
 
+def mark_asr_chunk_processing(job_id, chunk_index):
+    with connect_db() as conn:
+        conn.execute(
+            """
+            update asr_chunks
+            set status = ?, attempt_count = attempt_count + 1, error_code = null, updated_at = ?
+            where job_id = ? and chunk_index = ?
+            """,
+            ("processing", now_iso(), job_id, chunk_index),
+        )
+
+
+def mark_asr_chunk_completed(job_id, chunk_index, segments):
+    with connect_db() as conn:
+        conn.execute("delete from asr_chunk_segments where job_id = ? and chunk_index = ?", (job_id, chunk_index))
+        conn.executemany(
+            "insert into asr_chunk_segments values (?, ?, ?, ?, ?, ?)",
+            [
+                (job_id, chunk_index, index, segment["start_seconds"], segment["end_seconds"], segment["text"])
+                for index, segment in enumerate(segments)
+            ],
+        )
+        conn.execute(
+            """
+            update asr_chunks
+            set status = ?, segment_count = ?, error_code = null, updated_at = ?
+            where job_id = ? and chunk_index = ?
+            """,
+            ("completed", len(segments), now_iso(), job_id, chunk_index),
+        )
+        return conn.execute(
+            "select count(*) as count from asr_chunks where job_id = ? and status = 'completed'",
+            (job_id,),
+        ).fetchone()["count"]
+
+
+def mark_asr_chunk_failed(job_id, chunk_index, error_code):
+    with connect_db() as conn:
+        conn.execute(
+            """
+            update asr_chunks
+            set status = ?, error_code = ?, updated_at = ?
+            where job_id = ? and chunk_index = ?
+            """,
+            ("failed", error_code, now_iso(), job_id, chunk_index),
+        )
+
+
 def job_payload(job_id, include_ready=True):
     with connect_db() as conn:
         job = conn.execute("select * from preparation_jobs where job_id = ?", (job_id,)).fetchone()
@@ -875,6 +1172,7 @@ def job_payload(job_id, include_ready=True):
         transcript = load_transcript(payload["transcript_id"])
         analysis = analysis_result(payload["analysis_id"])
         payload["segments"] = transcript["segments"] if transcript else []
+        payload["sentence_entries"] = sentence_entries(payload["segments"])
         payload["bubbles"] = analysis["bubbles"] if analysis else []
         payload["bubble_count"] = len(payload["bubbles"])
     return payload
@@ -884,18 +1182,19 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
     validate_video_id(video_id)
     if learner_level not in LEARNER_LEVELS:
         raise ValueError("invalid learner level")
+    source_policy = "demo" if demo_mode else "live"
     with connect_db() as conn:
         if not force_refresh:
             existing = conn.execute(
                 """
                 select * from preparation_jobs
-                where video_id = ? and learner_level = ? and status in ('queued', 'processing', 'ready')
+                where video_id = ? and learner_level = ? and source_policy = ? and status in ('queued', 'processing', 'ready')
                 order by created_at desc limit 1
                 """,
-                (video_id, learner_level),
+                (video_id, learner_level, source_policy),
             ).fetchone()
             if existing:
-                start_preparation_thread(existing["job_id"], demo_mode)
+                start_preparation_thread(existing["job_id"])
                 return job_payload(existing["job_id"], include_ready=existing["status"] == "ready")
 
         seed = f"{video_id}:{learner_level}:{time.time_ns()}:{ANALYSIS_VERSION}"
@@ -906,22 +1205,22 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
             (video_id, video_id, timestamp, timestamp),
         )
         conn.execute(
-            "insert into preparation_jobs (job_id, video_id, learner_level, status, stage, force_refresh, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
-            (job_id, video_id, learner_level, "queued", "queued", int(force_refresh), timestamp, timestamp),
+            "insert into preparation_jobs (job_id, video_id, learner_level, source_policy, status, stage, force_refresh, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (job_id, video_id, learner_level, source_policy, "queued", "queued", int(force_refresh), timestamp, timestamp),
         )
-    start_preparation_thread(job_id, demo_mode)
+    start_preparation_thread(job_id)
     return job_payload(job_id, include_ready=False)
 
 
-def start_preparation_thread(job_id, demo_mode=False):
+def start_preparation_thread(job_id):
     with STATE_LOCK:
         if job_id in ACTIVE_PREPARATIONS:
             return
         ACTIVE_PREPARATIONS.add(job_id)
-    threading.Thread(target=run_preparation_job, args=(job_id, demo_mode), daemon=True).start()
+    threading.Thread(target=run_preparation_job, args=(job_id,), daemon=True).start()
 
 
-def run_preparation_job(job_id, demo_mode=False):
+def run_preparation_job(job_id):
     try:
         with connect_db() as conn:
             job = conn.execute("select * from preparation_jobs where job_id = ?", (job_id,)).fetchone()
@@ -930,6 +1229,7 @@ def run_preparation_job(job_id, demo_mode=False):
         video_id = job["video_id"]
         learner_level = job["learner_level"]
         force_refresh = bool(job["force_refresh"])
+        source_policy = job["source_policy"]
         update_job(job_id, status="processing", stage="fetching_captions", progress=0.02)
 
         try:
@@ -938,7 +1238,7 @@ def run_preparation_job(job_id, demo_mode=False):
             source = "youtube"
             duration = segments[-1]["end_seconds"] if segments else None
         except Exception:
-            if demo_mode or video_id in DEMO_VIDEO_IDS:
+            if source_policy == "demo" or video_id in DEMO_VIDEO_IDS:
                 update_job(job_id, stage="loading_demo", progress=0.1)
                 fixture = Path(__file__).resolve().parent / "fixtures/demo.vtt"
                 with open(fixture, encoding="utf-8") as file:
@@ -961,10 +1261,9 @@ def run_preparation_job(job_id, demo_mode=False):
         update_job(job_id, status="ready", stage="ready", analysis_id=analysis["analysis_id"], progress=1.0, message=None, error_code=None)
     except FileNotFoundError as error:
         update_job(job_id, status="failed", stage="failed", error_code=str(error), message=str(error))
-    except subprocess.TimeoutExpired as error:
-        update_job(job_id, status="failed", stage="failed", error_code="WHISPER_TIMEOUT", message=command_error("External tool timed out", error))
-    except subprocess.CalledProcessError as error:
-        update_job(job_id, status="failed", stage="failed", error_code="YTDLP_AUDIO_FAILED", message=command_error("External tool failed", error))
+    except ExternalCommandError as error:
+        prefix = "External tool timed out" if error.timeout else "External tool failed"
+        update_job(job_id, status="failed", stage="failed", error_code=error.error_code, message=command_error(prefix, error))
     except Exception as error:
         update_job(job_id, status="failed", stage="failed", error_code="PREPARATION_FAILED", message=str(error))
     finally:
@@ -1001,6 +1300,10 @@ def run_whole_video_asr(job_id, video_id):
                     for chunk in chunks
                 ],
             )
+            conn.execute(
+                "update asr_chunks set status = ?, error_code = ?, updated_at = ? where job_id = ? and status = ?",
+                ("pending", "STALE_PROCESSING_RESET", timestamp, job_id, "processing"),
+            )
             completed = conn.execute(
                 "select count(*) as count from asr_chunks where job_id = ? and status = 'completed'",
                 (job_id,),
@@ -1016,33 +1319,17 @@ def run_whole_video_asr(job_id, video_id):
                 ).fetchone()
             if row and row["status"] == "completed":
                 continue
-            with connect_db() as conn:
-                conn.execute(
-                    "update asr_chunks set status = ?, attempt_count = attempt_count + 1, updated_at = ? where job_id = ? and chunk_index = ?",
-                    ("processing", now_iso(), job_id, chunk["chunk_index"]),
-                )
-            segments = transcribe_audio_chunk(normalized_audio, chunk, str(job_media_dir), job_id)
+            mark_asr_chunk_processing(job_id, chunk["chunk_index"])
+            try:
+                segments = transcribe_audio_chunk(normalized_audio, chunk, str(job_media_dir), job_id)
+            except ExternalCommandError as error:
+                mark_asr_chunk_failed(job_id, chunk["chunk_index"], error.error_code)
+                raise
+            except Exception:
+                mark_asr_chunk_failed(job_id, chunk["chunk_index"], "ASR_CHUNK_FAILED")
+                raise
             all_segments.extend(segments)
-            with connect_db() as conn:
-                conn.execute(
-                    "delete from asr_chunk_segments where job_id = ? and chunk_index = ?",
-                    (job_id, chunk["chunk_index"]),
-                )
-                conn.executemany(
-                    "insert into asr_chunk_segments values (?, ?, ?, ?, ?, ?)",
-                    [
-                        (job_id, chunk["chunk_index"], index, segment["start_seconds"], segment["end_seconds"], segment["text"])
-                        for index, segment in enumerate(segments)
-                    ],
-                )
-                conn.execute(
-                    "update asr_chunks set status = ?, segment_count = ?, error_code = null, updated_at = ? where job_id = ? and chunk_index = ?",
-                    ("completed", len(segments), now_iso(), job_id, chunk["chunk_index"]),
-                )
-                completed = conn.execute(
-                    "select count(*) as count from asr_chunks where job_id = ? and status = 'completed'",
-                    (job_id,),
-                ).fetchone()["count"]
+            completed = mark_asr_chunk_completed(job_id, chunk["chunk_index"], segments)
             update_job(job_id, chunks_completed=completed, progress=0.2 + 0.55 * (completed / max(1, len(chunks))))
 
         update_job(job_id, stage="merging_transcript", progress=0.82)
@@ -1084,6 +1371,16 @@ def resume_preparations():
 def self_check():
     validate_config()
     init_db()
+    token, expires_at = pair_session(PAIRING_CODE)
+    assert token
+    assert expires_at > time.time()
+    assert valid_bearer_token(f"Bearer {token}")
+    try:
+        pair_session("000000" if PAIRING_CODE != "000000" else "000001")
+        raise AssertionError("wrong pairing code accepted")
+    except PermissionError:
+        pass
+    assert expired_pairing_rejected()
     vtt = """WEBVTT
 
 00:00:01.000 --> 00:00:03.500
@@ -1124,6 +1421,25 @@ Embeddings are numeric representations.
     assert merged[0]["text"] == "hello world from chunk boundary"
     assert format_section_time(65) == "00:01:05"
     segments = parse_subtitles(vtt + "\n" + srt)
+    two_sentences = sentence_entries([{
+        "id": "segment-001",
+        "start_seconds": 1,
+        "end_seconds": 3,
+        "text": "One sentence. Another sentence.全形句子。下一句。",
+    }])
+    assert len(two_sentences) == 4
+    split_sentence = sentence_entries([
+        {"id": "segment-001", "start_seconds": 1, "end_seconds": 2, "text": "Embeddings are"},
+        {"id": "segment-002", "start_seconds": 2, "end_seconds": 3, "text": "numeric representations."},
+    ])
+    assert split_sentence == [{
+        "id": "sentence-001",
+        "start_seconds": 1,
+        "end_seconds": 3,
+        "text": "Embeddings are numeric representations.",
+        "source_segment_ids": ["segment-001", "segment-002"],
+    }]
+    assert len(transcript_windows([{"id": str(index)} for index in range(90)], size=50, overlap=5)) == 2
     reviewed = [{
         "concept": "embeddings",
         "anchor_segment_id": "segment-001",
@@ -1140,6 +1456,7 @@ Embeddings are numeric representations.
     assert load_transcript(stored["transcript_id"])["segments"][0]["id"] == "segment-001"
     analysis = run_analysis_for_transcript("demo", "beginner", stored["transcript_id"], True)
     assert analysis["status"] == "completed"
+    assert analysis["analysis_metrics"]["accepted_bubble_count"] >= 0
     with open(Path(__file__).resolve().parent / "fixtures/demo.vtt", encoding="utf-8") as file:
         demo_segments = parse_subtitles(file.read())
     assert len(demo_segments) >= 6
@@ -1167,7 +1484,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def authorized(self):
-        return self.headers.get("authorization") == f"Bearer {API_TOKEN}"
+        return valid_bearer_token(self.headers.get("authorization", ""))
 
     def read_json_body(self, limit):
         length = int(self.headers.get("content-length", "0"))
@@ -1176,15 +1493,28 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"{}")
 
     def do_POST(self):
-        if not self.authorized():
+        url = urlparse(self.path)
+        if url.path != "/api/pair" and not self.authorized():
             return self.send_json({"error": "unauthorized", "error_code": "UNAUTHORIZED", "api_version": API_VERSION}, 401)
 
-        url = urlparse(self.path)
         try:
             limit = MAX_SUBTITLE_BYTES if url.path == "/api/subtitles" else MAX_JSON_BYTES
             body = self.read_json_body(limit)
         except (ValueError, json.JSONDecodeError) as error:
             return self.send_json({"error": str(error), "error_code": "BAD_REQUEST"}, 400)
+
+        if url.path == "/api/pair":
+            try:
+                token, expires_at = pair_session(body.get("pairing_code", ""))
+                return self.send_json({
+                    "api_version": API_VERSION,
+                    "session_token": token,
+                    "expires_at": iso_from_timestamp(expires_at),
+                })
+            except ValueError as error:
+                return self.send_json({"error": str(error), "error_code": "PAIRING_EXPIRED"}, 401)
+            except PermissionError as error:
+                return self.send_json({"error": str(error), "error_code": "PAIRING_INVALID"}, 401)
 
         prepare_match = re.fullmatch(r"/api/videos/([^/]+)/prepare", url.path)
         if prepare_match:
@@ -1241,6 +1571,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except ValueError as error:
                 return self.send_json({"error": str(error), "error_code": "BAD_REQUEST"}, 400)
+            except ExternalCommandError as error:
+                return self.send_json({"error": str(error), "error_code": error.error_code}, 502)
             except Exception as error:
                 return self.send_json({"error": str(error), "error_code": "NO_USABLE_CAPTIONS"}, 404)
 
@@ -1326,13 +1658,16 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     validate_config()
-    init_db()
     if "--check" in sys.argv:
-        self_check()
+        with tempfile.TemporaryDirectory(prefix="contextbubble-check-") as tmpdir:
+            set_data_dir(tmpdir)
+            self_check()
         print("ok")
         raise SystemExit(0)
+    init_db()
     resume_preparations()
     server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
     print("ContextBubble backend on http://127.0.0.1:8000")
     print(f"ContextBubble API token: {API_TOKEN}")
+    print(f"ContextBubble pairing code: {PAIRING_CODE} (expires in 5 minutes)")
     server.serve_forever()

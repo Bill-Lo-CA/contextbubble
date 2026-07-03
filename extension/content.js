@@ -14,6 +14,7 @@
   let video;
   let bubbles = [];
   let transcriptSegments = [];
+  let sentenceEntries = [];
   let shownKeys = new Set();
   let activeVideoId;
   let visibleBubbles = [];
@@ -23,7 +24,8 @@
   let loggedFallbackSegments = new Set();
   let lastVideoTime = 0;
   let analysisRunning = false;
-  let apiToken = "";
+  let pageGeneration = 0;
+  let authToken = "";
 
   function getVideoId() {
     return new URLSearchParams(location.search).get("v") || "";
@@ -129,6 +131,10 @@
     transcriptSegments.sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
+  function appendSentenceEntries(entries) {
+    sentenceEntries = [...entries].sort((left, right) => left.start_seconds - right.start_seconds);
+  }
+
   function appendBubbles(nextBubbles) {
     const existing = new Set(bubbles.map((bubble) => {
       return `${bubble.concept}:${bubble.start_seconds}`;
@@ -145,7 +151,7 @@
 
   function authHeaders() {
     return {
-      "authorization": `Bearer ${apiToken}`,
+      "authorization": `Bearer ${authToken}`,
       "content-type": "application/json",
     };
   }
@@ -218,27 +224,34 @@
     return Boolean(readCaptionText()) || Boolean(player && !player.classList.contains("ytp-autohide"));
   }
 
-  async function startAnalysis({ learnerLevel, apiToken: token, demoMode = false, forceRefresh = false }) {
+  async function startAnalysis({ learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
-    apiToken = token || "";
+    authToken = sessionToken || "";
 
     const videoId = getVideoId();
     const currentVideo = findVideo();
+    const requestGeneration = pageGeneration;
     try {
       if (!videoId) throw new Error("Open a YouTube watch page first.");
       if (!currentVideo) throw new Error("No YouTube video element found.");
-      if (!apiToken) throw new Error("Missing API token.");
+      if (!authToken) throw new Error("Pair the backend first.");
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
       job = await pollPreparation(job);
+      if (getVideoId() !== videoId || findVideo() !== currentVideo || pageGeneration !== requestGeneration) {
+        setSharedStatus("Analysis finished, but the page changed. Result discarded.");
+        return { status: "stale-result-discarded", videoId };
+      }
       transcriptSegments = [];
+      sentenceEntries = [];
       bubbles = [];
       shownKeys = new Set();
       loggedFallbackSegments = new Set();
       lastFallbackCaptionAt = 0;
       clearVisibleBubbles();
       appendTranscriptSegments(job.segments || []);
+      appendSentenceEntries(job.sentence_entries || []);
       appendBubbles(job.bubbles || []);
 
       return {
@@ -344,9 +357,11 @@
 
     if (activeVideoId !== videoId) {
       activeVideoId = videoId;
+      pageGeneration += 1;
       shownKeys = new Set();
       bubbles = [];
       transcriptSegments = [];
+      sentenceEntries = [];
       lastCaptionText = "";
       lastFallbackCaptionAt = 0;
       loggedFallbackSegments = new Set();
@@ -360,7 +375,8 @@
     lastVideoTime = currentVideo.currentTime;
 
     const visibleCaptionText = readCaptionText();
-    const activeSegment = transcriptSegments.find((segment) => {
+    const captionEntries = sentenceEntries.length ? sentenceEntries : transcriptSegments;
+    const activeSegment = captionEntries.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
     appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
