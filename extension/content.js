@@ -2,6 +2,7 @@
   const SCRIPT_VERSION = 2;
   const API_BASE = "http://127.0.0.1:8000";
   const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
+  const SENTENCE_ENTRIES_KEY = "contextbubbleSentenceEntries";
   const STATUS_KEY = "contextbubbleStatus";
   const MAX_CAPTIONS = 120;
   const FALLBACK_CAPTION_INTERVAL_MS = 4500;
@@ -117,6 +118,10 @@
     chrome.storage.local.set({ [CAPTION_LOG_KEY]: [] });
   }
 
+  function storeSentenceEntries(entries) {
+    chrome.storage.local.set({ [SENTENCE_ENTRIES_KEY]: entries });
+  }
+
   function appendTranscriptSegments(segments) {
     const existing = new Set(transcriptSegments.map((segment) => {
       return `${segment.start_seconds}:${segment.end_seconds}:${segment.text}`;
@@ -133,6 +138,7 @@
 
   function appendSentenceEntries(entries) {
     sentenceEntries = [...entries].sort((left, right) => left.start_seconds - right.start_seconds);
+    storeSentenceEntries(sentenceEntries);
   }
 
   function appendBubbles(nextBubbles) {
@@ -157,12 +163,22 @@
   }
 
   async function fetchJson(path, options = {}) {
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers: authHeaders(),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Backend request failed.");
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, { ...options, headers: authHeaders() });
+    } catch {
+      throw new Error("Backend not running or unreachable.");
+    }
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error("Backend returned an invalid response.");
+    }
+    if (!response.ok) {
+      if (response.status === 401) throw new Error("Invalid or expired session.");
+      throw new Error(result.error || "Backend request failed.");
+    }
     return result;
   }
 
@@ -239,6 +255,7 @@
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
       job = await pollPreparation(job);
+      job = await fetchJson(`/api/preparations/${job.job_id}?include_transcript=true&include_sentence_entries=true`);
       if (getVideoId() !== videoId || findVideo() !== currentVideo || pageGeneration !== requestGeneration) {
         setSharedStatus("Analysis finished, but the page changed. Result discarded.");
         return { status: "stale-result-discarded", videoId };
@@ -258,6 +275,7 @@
         videoId,
         count: bubbles.length,
         segmentCount: transcriptSegments.length,
+        sentenceCount: sentenceEntries.length,
         transcriptSource: job.transcript_source,
         jobId: job.job_id,
         analysisId: job.analysis_id,
@@ -367,6 +385,7 @@
       loggedFallbackSegments = new Set();
       lastVideoTime = currentVideo.currentTime;
       clearCaptionLog();
+      storeSentenceEntries([]);
       clearVisibleBubbles();
     }
     if (Math.abs(currentVideo.currentTime - lastVideoTime) > 2.5) {
@@ -374,12 +393,13 @@
     }
     lastVideoTime = currentVideo.currentTime;
 
-    const visibleCaptionText = readCaptionText();
-    const captionEntries = sentenceEntries.length ? sentenceEntries : transcriptSegments;
-    const activeSegment = captionEntries.find((segment) => {
-      return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
-    });
-    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
+    if (!sentenceEntries.length) {
+      const visibleCaptionText = readCaptionText();
+      const activeSegment = transcriptSegments.find((segment) => {
+        return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
+      });
+      appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
+    }
 
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

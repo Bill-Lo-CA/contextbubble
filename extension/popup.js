@@ -2,6 +2,7 @@ const analyze = document.getElementById("analyze");
 const reanalyze = document.getElementById("reanalyze");
 const openCaptions = document.getElementById("open-captions");
 const pair = document.getElementById("pair");
+const checkBackend = document.getElementById("check-backend");
 const pairingCode = document.getElementById("pairing-code");
 const demoMode = document.getElementById("demo-mode");
 const learnerLevel = document.getElementById("learner-level");
@@ -34,19 +35,45 @@ async function sessionToken() {
   return saved[SESSION_TOKEN_KEY] || "";
 }
 
+async function fetchBackend(path, options = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch {
+    throw new Error("Backend not running or unreachable.");
+  }
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error("Backend returned an invalid response.");
+  }
+  if (!response.ok) {
+    if (response.status === 401 && path !== "/api/pair") throw new Error("Invalid or expired session.");
+    throw new Error(result.error || "Backend request failed.");
+  }
+  return result;
+}
+
 async function pairBackend() {
   const code = pairingCode.value.trim();
   if (!code) throw new Error("Enter the backend pairing code.");
-  const response = await fetch(`${API_BASE}/api/pair`, {
+  const result = await fetchBackend("/api/pair", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ pairing_code: code }),
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Pairing failed.");
   await chrome.storage.session.set({ [SESSION_TOKEN_KEY]: result.session_token });
   pairingCode.value = "";
   return result;
+}
+
+async function checkBackendConnection() {
+  const token = await sessionToken();
+  if (!token) throw new Error("Pair the backend first.");
+  await fetchBackend("/api/health", {
+    headers: { "authorization": `Bearer ${token}` },
+  });
 }
 
 async function sendAnalyzeMessage(tabId, forceRefresh = false) {
@@ -97,6 +124,19 @@ pair.addEventListener("click", async () => {
     setStatus(error.message);
   } finally {
     pair.disabled = false;
+  }
+});
+
+checkBackend.addEventListener("click", async () => {
+  checkBackend.disabled = true;
+  setStatus("Checking backend...");
+  try {
+    await checkBackendConnection();
+    setStatus("Backend connected.");
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    checkBackend.disabled = false;
   }
 });
 

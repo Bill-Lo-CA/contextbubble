@@ -20,16 +20,17 @@ python backend/server.py
 4. Select this `extension/` directory.
 5. Open a YouTube watch page.
 6. Enter the backend pairing code and click **Pair Backend**.
-7. Optionally enable **Demo mode** for the local fixture.
-8. Pick a learner level.
-9. Click **Analyze Video**.
-10. Play to a returned bubble timestamp.
+7. Optionally click **Check Backend** to validate the paired session.
+8. Optionally enable **Demo mode** for the local fixture.
+9. Pick a learner level.
+10. Click **Analyze Video**.
+11. Play to a returned bubble timestamp.
 
 Expected result: reviewed ContextBubble bubbles appear near their configured timestamps. Captions appear in the Chrome Side Panel when **Open Captions** is clicked.
 
 ## Current Limits
 
-- The Side Panel caption log prefers visible `.ytp-caption-segment` text and falls back to backend transcript segments with throttling and de-duplication.
+- The Side Panel shows prepared sentence cards after analysis is ready and uses visible `.ytp-caption-segment` text only as a pre-ready debug fallback.
 - The extension starts or resumes a persistent backend preparation job and polls stage progress until ready.
 - The extension stores paired backend sessions in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
 - The backend tries `yt-dlp` YouTube captions first, then falls back to whole-video whisper.cpp chunks from one downloaded audio file.

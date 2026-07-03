@@ -38,6 +38,16 @@ h1 {
   font-size: 12px;
 }
 
+.debug {
+  margin-top: 6px;
+  color: #666;
+  font-size: 12px;
+}
+
+.debug summary {
+  cursor: pointer;
+}
+
 .empty {
   color: #666;
   padding: 16px 4px;
