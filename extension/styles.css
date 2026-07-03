@@ -1,9 +1,13 @@
-#contextbubble-root {
-  position: fixed;
-  right: 24px;
-  bottom: 112px;
+#contextbubble-layer {
+  position: absolute;
+  inset: 0;
   z-index: 2147483647;
-  width: min(360px, calc(100vw - 48px));
+  pointer-events: none;
+}
+
+.contextbubble-bubble {
+  position: absolute;
+  width: min(360px, calc(50% - 32px));
   box-sizing: border-box;
   padding: 14px;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -12,6 +16,39 @@
   color: #fff;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
   font: 14px/1.45 Arial, sans-serif;
+  pointer-events: auto;
+}
+
+.contextbubble-slot-top-left {
+  top: 24px;
+  left: 24px;
+}
+
+.contextbubble-slot-top-right {
+  top: 24px;
+  right: 24px;
+}
+
+.contextbubble-slot-middle-left {
+  top: 50%;
+  left: 24px;
+  transform: translateY(-50%);
+}
+
+.contextbubble-slot-middle-right {
+  top: 50%;
+  right: 24px;
+  transform: translateY(-50%);
+}
+
+.contextbubble-slot-bottom-left {
+  bottom: 88px;
+  left: 24px;
+}
+
+.contextbubble-slot-bottom-right {
+  right: 24px;
+  bottom: 88px;
 }
 
 .contextbubble-title {

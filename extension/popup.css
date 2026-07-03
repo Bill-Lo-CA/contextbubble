@@ -29,6 +29,19 @@ select {
   font: inherit;
 }
 
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 400;
+}
+
+.inline input {
+  width: auto;
+  margin: 0;
+}
+
 button {
   width: 100%;
   border: 0;

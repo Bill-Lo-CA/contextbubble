@@ -1,6 +1,7 @@
 const analyze = document.getElementById("analyze");
 const openCaptions = document.getElementById("open-captions");
 const apiToken = document.getElementById("api-token");
+const demoMode = document.getElementById("demo-mode");
 const learnerLevel = document.getElementById("learner-level");
 const status = document.getElementById("status");
 const STATUS_KEY = "contextbubbleStatus";
@@ -36,6 +37,7 @@ function sendAnalyzeMessage(tabId) {
   const message = {
     type: "contextbubble:analyze-v2",
     apiToken: apiToken.value,
+    demoMode: demoMode.checked,
     learnerLevel: learnerLevel.value,
   };
 

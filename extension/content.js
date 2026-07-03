@@ -2,9 +2,10 @@
   const SCRIPT_VERSION = 2;
   const API_BASE = "http://127.0.0.1:8000";
   const CHUNK_SECONDS = 30;
-  const FOLLOWUP_CHUNKS = 1;
   const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
   const MAX_CAPTIONS = 120;
+  const SAFE_SLOTS = ["top-right", "top-left", "middle-right", "middle-left", "bottom-right", "bottom-left"];
+  const TOP_SLOTS = ["top-right", "top-left", "middle-right", "middle-left"];
 
   globalThis.__contextbubbleCleanup?.();
   globalThis.__contextbubbleVersion = SCRIPT_VERSION;
@@ -14,10 +15,10 @@
   let transcriptSegments = [];
   let shownKeys = new Set();
   let activeVideoId;
-  let activeBubble;
-  let hideTimer;
+  let visibleBubbles = [];
+  let trackedVideo;
   let lastCaptionText = "";
-  let expanded = false;
+  let lastVideoTime = 0;
   let analysisRunning = false;
   let apiToken = "";
 
@@ -30,11 +31,32 @@
     return video;
   }
 
-  function removeBubble() {
-    document.getElementById("contextbubble-root")?.remove();
-    activeBubble = null;
-    expanded = false;
-    clearTimeout(hideTimer);
+  function findPlayer() {
+    return document.querySelector(".html5-video-player") || findVideo()?.parentElement;
+  }
+
+  function clearVisibleBubbles() {
+    for (const item of visibleBubbles) {
+      clearTimeout(item.timer);
+      item.root.remove();
+    }
+    visibleBubbles = [];
+    document.getElementById("contextbubble-layer")?.remove();
+  }
+
+  function ensureLayer() {
+    const player = findPlayer();
+    if (!player) return null;
+    if (getComputedStyle(player).position === "static") {
+      player.style.position = "relative";
+    }
+    let layer = player.querySelector("#contextbubble-layer");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.id = "contextbubble-layer";
+      player.appendChild(layer);
+    }
+    return layer;
   }
 
   function readCaptionText() {
@@ -125,11 +147,12 @@
     return result;
   }
 
-  async function fetchDemoTranscript(videoId) {
+  async function fetchDemoTranscript(videoId, demoMode) {
     return fetchJson("/api/demo-transcript", {
       method: "POST",
       body: JSON.stringify({
         video_id: videoId,
+        demo_mode: demoMode,
       }),
     });
   }
@@ -168,7 +191,12 @@
     throw new Error("Analysis timed out.");
   }
 
-  async function startAnalysis({ learnerLevel, apiToken: token }) {
+  function captionsOrControlsVisible() {
+    const player = findPlayer();
+    return Boolean(readCaptionText()) || Boolean(player && !player.classList.contains("ytp-autohide"));
+  }
+
+  async function startAnalysis({ learnerLevel, apiToken: token, demoMode = false }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
     apiToken = token || "";
@@ -184,13 +212,20 @@
       bubbles = [];
       shownKeys = new Set();
       clearCaptionLog();
-      removeBubble();
+      clearVisibleBubbles();
 
       let transcript;
+      let transcriptError;
       try {
         transcript = await fetchYoutubeTranscript(videoId, currentVideo.currentTime || 0);
-      } catch (_error) {
-        transcript = await fetchDemoTranscript(videoId);
+      } catch (error) {
+        transcriptError = error;
+      }
+      if (!transcript && demoMode) {
+        transcript = await fetchDemoTranscript(videoId, true);
+      }
+      if (!transcript) {
+        throw transcriptError || new Error("No transcript available for this video.");
       }
       appendTranscriptSegments(transcript.segments || []);
       const started = await startBackendAnalysis(videoId, transcript.transcript_id, learnerLevel);
@@ -208,12 +243,40 @@
     }
   }
 
-  function showBubble(bubble) {
-    if (document.getElementById("contextbubble-root")) return;
+  function removeBubble(root) {
+    const item = visibleBubbles.find((entry) => entry.root === root);
+    if (item) clearTimeout(item.timer);
+    root.remove();
+    visibleBubbles = visibleBubbles.filter((entry) => entry.root !== root);
+  }
 
-    activeBubble = bubble;
+  function scheduleRemoval(item) {
+    clearTimeout(item.timer);
+    if (item.expanded) return;
+    item.startedAt = Date.now();
+    item.timer = setTimeout(() => removeBubble(item.root), item.remainingMs);
+  }
+
+  function pauseRemoval(item) {
+    if (item.expanded) return;
+    clearTimeout(item.timer);
+    item.remainingMs = Math.max(0, item.remainingMs - (Date.now() - item.startedAt));
+  }
+
+  function availableSlot() {
+    if (visibleBubbles.length >= 2) return "";
+    const used = new Set(visibleBubbles.map((item) => item.slot));
+    const slots = captionsOrControlsVisible() ? TOP_SLOTS : SAFE_SLOTS;
+    return slots.find((slot) => !used.has(slot)) || "";
+  }
+
+  function showBubble(bubble) {
+    const slot = availableSlot();
+    const layer = ensureLayer();
+    if (!slot || !layer) return false;
+
     const root = document.createElement("aside");
-    root.id = "contextbubble-root";
+    root.className = `contextbubble-bubble contextbubble-slot-${slot}`;
     root.innerHTML = `
       <div class="contextbubble-title"></div>
       <div class="contextbubble-text"></div>
@@ -225,29 +288,35 @@
     `;
 
     root.querySelector(".contextbubble-title").textContent = bubble.concept;
-    renderText(root);
+    layer.appendChild(root);
+    const item = { bubble, root, slot, expanded: false, timer: 0, remainingMs: 8000, startedAt: 0 };
+    visibleBubbles.push(item);
+    renderText(item);
     root.addEventListener("click", handleBubbleClick);
-    document.body.appendChild(root);
-    hideTimer = setTimeout(() => {
-      if (!expanded && activeBubble?.id === bubble.id) removeBubble();
-    }, 8000);
+    root.addEventListener("mouseenter", () => pauseRemoval(item));
+    root.addEventListener("mouseleave", () => scheduleRemoval(item));
+    scheduleRemoval(item);
+    return true;
   }
 
-  function renderText(root) {
-    if (!activeBubble) return;
-    const text = expanded
-      ? `${activeBubble.short_explanation} ${activeBubble.expanded_explanation || ""}`
-      : activeBubble.short_explanation;
-    root.querySelector(".contextbubble-text").textContent = text;
-    root.querySelector('[data-action="expand"]').textContent = expanded ? "Collapse" : "Expand";
+  function renderText(item) {
+    const text = item.expanded
+      ? `${item.bubble.short_explanation} ${item.bubble.expanded_explanation || ""}`
+      : item.bubble.short_explanation;
+    item.root.querySelector(".contextbubble-text").textContent = text;
+    item.root.querySelector('[data-action="expand"]').textContent = item.expanded ? "Collapse" : "Expand";
   }
 
   function handleBubbleClick(event) {
     const action = event.target?.dataset?.action;
-    if (action === "dismiss" || action === "known") removeBubble();
+    const item = visibleBubbles.find((entry) => entry.root === event.currentTarget);
+    if (!item) return;
+    if (action === "dismiss" || action === "known") removeBubble(item.root);
     if (action === "expand") {
-      expanded = !expanded;
-      renderText(event.currentTarget);
+      item.expanded = !item.expanded;
+      item.remainingMs = 8000;
+      renderText(item);
+      scheduleRemoval(item);
     }
   }
 
@@ -256,6 +325,11 @@
     const videoId = getVideoId();
 
     if (!currentVideo || !videoId) return;
+    if (trackedVideo !== currentVideo) {
+      if (trackedVideo) trackedVideo.removeEventListener("seeking", clearVisibleBubbles);
+      trackedVideo = currentVideo;
+      trackedVideo.addEventListener("seeking", clearVisibleBubbles);
+    }
 
     if (activeVideoId !== videoId) {
       activeVideoId = videoId;
@@ -263,17 +337,20 @@
       bubbles = [];
       transcriptSegments = [];
       lastCaptionText = "";
-      expanded = false;
+      lastVideoTime = currentVideo.currentTime;
       clearCaptionLog();
-      removeBubble();
+      clearVisibleBubbles();
     }
+    if (Math.abs(currentVideo.currentTime - lastVideoTime) > 2.5) {
+      clearVisibleBubbles();
+    }
+    lastVideoTime = currentVideo.currentTime;
 
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
     appendCaptionLog(activeSegment?.text || readCaptionText(), currentVideo.currentTime, activeSegment);
 
-    if (activeBubble) return;
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
       if (!shownKeys.has(key) && currentVideo.currentTime > bubble.start_seconds + 1.5) {
@@ -289,8 +366,9 @@
     });
 
     if (dueBubble) {
-      shownKeys.add(`${videoId}:${dueBubble.concept}:${dueBubble.start_seconds}`);
-      showBubble(dueBubble);
+      if (showBubble(dueBubble)) {
+        shownKeys.add(`${videoId}:${dueBubble.concept}:${dueBubble.start_seconds}`);
+      }
     }
   }
 
@@ -306,6 +384,8 @@
   const tickTimer = setInterval(tick, 500);
   globalThis.__contextbubbleCleanup = () => {
     clearInterval(tickTimer);
+    if (trackedVideo) trackedVideo.removeEventListener("seeking", clearVisibleBubbles);
+    clearVisibleBubbles();
     chrome.runtime.onMessage.removeListener(handleMessage);
   };
 })();

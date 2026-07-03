@@ -26,12 +26,19 @@ YTDLP_CMD="$HOME/.local/bin/yt-dlp"
 WHISPER_CMD="$HOME/tools/whisper.cpp/build/bin/whisper-cli"
 WHISPER_MODEL="$HOME/tools/whisper.cpp/models/ggml-base.en.bin"
 WHISPER_NO_GPU=0
+GEMINI_API_KEY=""
+GEMINI_MODEL="gemini-2.5-flash"
+AGENT_MODE="heuristic"
+DEMO_VIDEO_IDS=""
 ```
 
 If those paths exist, the backend uses them automatically. Override them only
 when your tools live elsewhere. By default, whisper.cpp is allowed to use GPU
 when the binary was built with GPU support. Set `WHISPER_NO_GPU=1` to force CPU
-mode.
+mode. Agent analysis defaults to the local heuristic mode for testing. Set
+`AGENT_MODE=gemini` and provide `GEMINI_API_KEY` to use the Gemini Concept Agent
+and Gemini Reviewer Agent. Demo fixtures are only used when Demo mode is checked
+in the popup or when the current video ID is listed in `DEMO_VIDEO_IDS`.
 
 ## Install Tools
 
@@ -86,6 +93,9 @@ http://127.0.0.1:8000
 The extension asks the backend for YouTube captions first, starts an analysis
 job, and polls until it completes. Bubbles display only inside a short timing
 window near their timestamp; skipped old bubbles are not replayed after seeking.
+If YouTube captions and ASR fallback fail, the extension reports the error
+instead of silently using the demo fixture. Use **Demo mode** only for an
+explicit fixture-backed demo.
 
 ## Validate
 
@@ -100,8 +110,8 @@ node --check extension/popup.js
 - YouTube caption fetch depends on `yt-dlp` and caption availability.
 - Live ASR fallback processes only the current 30-second chunk.
 - No background queue or prefetch yet.
-- The stored demo transcript fixture is only a local fallback.
+- The stored demo transcript fixture is only available through explicit Demo mode or the demo video allowlist.
 - The analysis cache persists to a local JSON file.
-- The agent workflow is heuristic until a model provider is wired in.
+- The agent workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini.
 - The extension does not download media directly; backend `yt-dlp` does.
 - YouTube download behavior depends on `yt-dlp` staying current.
