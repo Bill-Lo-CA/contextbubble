@@ -1,9 +1,10 @@
 (function () {
   const SCRIPT_VERSION = 2;
   const API_BASE = "http://127.0.0.1:8000";
-  const CHUNK_SECONDS = 30;
   const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
+  const STATUS_KEY = "contextbubbleStatus";
   const MAX_CAPTIONS = 120;
+  const FALLBACK_CAPTION_INTERVAL_MS = 4500;
   const SAFE_SLOTS = ["top-right", "top-left", "middle-right", "middle-left", "bottom-right", "bottom-left"];
   const TOP_SLOTS = ["top-right", "top-left", "middle-right", "middle-left"];
 
@@ -18,6 +19,8 @@
   let visibleBubbles = [];
   let trackedVideo;
   let lastCaptionText = "";
+  let lastFallbackCaptionAt = 0;
+  let loggedFallbackSegments = new Set();
   let lastVideoTime = 0;
   let analysisRunning = false;
   let apiToken = "";
@@ -74,10 +77,18 @@
     return `${hours}:${minutes}:${secs}`;
   }
 
-  function appendCaptionLog(text, currentTime, segment) {
+  function appendCaptionLog(text, currentTime, segment, isFallback = false) {
     if (!text) {
       lastCaptionText = "";
       return;
+    }
+
+    if (isFallback) {
+      const segmentKey = segment ? `${segment.start_seconds}:${segment.end_seconds}:${segment.text}` : text;
+      if (loggedFallbackSegments.has(segmentKey)) return;
+      if (Date.now() - lastFallbackCaptionAt < FALLBACK_CAPTION_INTERVAL_MS) return;
+      loggedFallbackSegments.add(segmentKey);
+      lastFallbackCaptionAt = Date.now();
     }
 
     const timeText = segment
@@ -99,6 +110,8 @@
 
   function clearCaptionLog() {
     lastCaptionText = "";
+    lastFallbackCaptionAt = 0;
+    loggedFallbackSegments = new Set();
     chrome.storage.local.set({ [CAPTION_LOG_KEY]: [] });
   }
 
@@ -147,48 +160,57 @@
     return result;
   }
 
-  async function fetchDemoTranscript(videoId, demoMode) {
-    return fetchJson("/api/demo-transcript", {
-      method: "POST",
-      body: JSON.stringify({
-        video_id: videoId,
-        demo_mode: demoMode,
-      }),
-    });
+  function setSharedStatus(text) {
+    chrome.storage.session.set({ [STATUS_KEY]: text });
   }
 
-  async function fetchYoutubeTranscript(videoId, currentTime) {
-    return fetchJson("/api/youtube-subtitles", {
-      method: "POST",
-      body: JSON.stringify({
-        video_id: videoId,
-        current_time: currentTime,
-        chunk_seconds: CHUNK_SECONDS,
-      }),
-    });
+  function stageText(job) {
+    const stages = {
+      queued: "Queued...",
+      fetching_captions: "Checking captions...",
+      loading_demo: "Loading demo transcript...",
+      fetching_metadata: "Reading video metadata...",
+      downloading_audio: "Downloading audio...",
+      normalizing_audio: "Normalizing audio...",
+      transcribing: `Transcribing ${job.chunks_completed || 0} / ${job.chunks_total || 0} chunks...`,
+      merging_transcript: "Merging transcript...",
+      concept_agent: "Generating concepts...",
+      reviewing: "Reviewing candidates...",
+      validating: "Validating bubbles...",
+      ready: `Ready: ${job.bubble_count || job.bubbles?.length || 0} bubbles.`,
+      failed: job.message || "Preparation failed.",
+    };
+    return stages[job.stage] || `${job.stage || job.status}...`;
   }
 
-  async function startBackendAnalysis(videoId, transcriptId, learnerLevel) {
-    return fetchJson("/api/analyses", {
+  async function startPreparation(videoId, learnerLevel, demoMode, forceRefresh) {
+    return fetchJson(`/api/videos/${videoId}/prepare`, {
       method: "POST",
       body: JSON.stringify({
-        video_id: videoId,
-        transcript_id: transcriptId,
         learner_level: learnerLevel,
-        force_refresh: false,
+        demo_mode: demoMode,
+        force_refresh: forceRefresh,
       }),
     });
   }
 
-  async function pollAnalysis(analysisId) {
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
-      const result = await fetchJson(`/api/analyses/${analysisId}`);
-      if (result.status === "completed") return result;
-      if (result.status === "failed") throw new Error(result.message || "Analysis failed.");
-      await new Promise((resolve) => setTimeout(resolve, 700));
+  async function pollPreparation(job) {
+    let lastUpdated = job.updated_at || "";
+    let lastMove = Date.now();
+    while (true) {
+      setSharedStatus(stageText(job));
+      if (job.status === "ready") return job;
+      if (job.status === "failed") throw new Error(job.message || "Preparation failed.");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      job = await fetchJson(`/api/preparations/${job.job_id}`);
+      if (job.updated_at && job.updated_at !== lastUpdated) {
+        lastUpdated = job.updated_at;
+        lastMove = Date.now();
+      }
+      if (Date.now() - lastMove > 10 * 60 * 1000) {
+        throw new Error("Preparation stalled.");
+      }
     }
-    throw new Error("Analysis timed out.");
   }
 
   function captionsOrControlsVisible() {
@@ -196,7 +218,7 @@
     return Boolean(readCaptionText()) || Boolean(player && !player.classList.contains("ytp-autohide"));
   }
 
-  async function startAnalysis({ learnerLevel, apiToken: token, demoMode = false }) {
+  async function startAnalysis({ learnerLevel, apiToken: token, demoMode = false, forceRefresh = false }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
     apiToken = token || "";
@@ -208,35 +230,24 @@
       if (!currentVideo) throw new Error("No YouTube video element found.");
       if (!apiToken) throw new Error("Missing API token.");
 
+      let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
+      job = await pollPreparation(job);
       transcriptSegments = [];
       bubbles = [];
       shownKeys = new Set();
-      clearCaptionLog();
+      loggedFallbackSegments = new Set();
+      lastFallbackCaptionAt = 0;
       clearVisibleBubbles();
-
-      let transcript;
-      let transcriptError;
-      try {
-        transcript = await fetchYoutubeTranscript(videoId, currentVideo.currentTime || 0);
-      } catch (error) {
-        transcriptError = error;
-      }
-      if (!transcript && demoMode) {
-        transcript = await fetchDemoTranscript(videoId, true);
-      }
-      if (!transcript) {
-        throw transcriptError || new Error("No transcript available for this video.");
-      }
-      appendTranscriptSegments(transcript.segments || []);
-      const started = await startBackendAnalysis(videoId, transcript.transcript_id, learnerLevel);
-      const result = await pollAnalysis(started.analysis_id);
-      appendBubbles(result.bubbles || []);
+      appendTranscriptSegments(job.segments || []);
+      appendBubbles(job.bubbles || []);
 
       return {
         videoId,
         count: bubbles.length,
         segmentCount: transcriptSegments.length,
-        analysisId: started.analysis_id,
+        transcriptSource: job.transcript_source,
+        jobId: job.job_id,
+        analysisId: job.analysis_id,
       };
     } finally {
       analysisRunning = false;
@@ -337,6 +348,8 @@
       bubbles = [];
       transcriptSegments = [];
       lastCaptionText = "";
+      lastFallbackCaptionAt = 0;
+      loggedFallbackSegments = new Set();
       lastVideoTime = currentVideo.currentTime;
       clearCaptionLog();
       clearVisibleBubbles();
@@ -346,10 +359,11 @@
     }
     lastVideoTime = currentVideo.currentTime;
 
+    const visibleCaptionText = readCaptionText();
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
-    appendCaptionLog(activeSegment?.text || readCaptionText(), currentVideo.currentTime, activeSegment);
+    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
 
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

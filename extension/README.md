@@ -21,17 +21,18 @@ python backend/server.py
 5. Open a YouTube watch page.
 6. Paste the backend API token into the popup.
 7. Optionally enable **Demo mode** for the local fixture.
-8. Click **Analyze Video**.
-9. Play to a returned bubble timestamp.
+8. Pick a learner level.
+9. Click **Analyze Video**.
+10. Play to a returned bubble timestamp.
 
 Expected result: reviewed ContextBubble bubbles appear near their configured timestamps. Captions appear in the Chrome Side Panel when **Open Captions** is clicked.
 
 ## Current Limits
 
-- The Side Panel caption log reads visible `.ytp-caption-segment` text only as a debug preview until transcript segments are available.
-- The extension starts an analysis job and polls until it completes.
-- The backend tries `yt-dlp` YouTube captions first, then falls back to a 30-second whisper.cpp chunk.
+- The Side Panel caption log prefers visible `.ytp-caption-segment` text and falls back to backend transcript segments with throttling and de-duplication.
+- The extension starts or resumes a persistent backend preparation job and polls stage progress until ready.
+- The backend tries `yt-dlp` YouTube captions first, then falls back to whole-video whisper.cpp chunks from one downloaded audio file.
 - Demo fixture fallback is explicit only; arbitrary videos do not silently receive the demo transcript.
 - Bubbles render in safe slots inside the YouTube video player, with at most two visible at once.
-- The backend persists analysis cache to a local JSON file.
+- The backend persists preparation jobs, chunks, transcripts, analyses, and bubbles in local SQLite.
 - Heavy ASR work belongs in the backend, not the extension.
