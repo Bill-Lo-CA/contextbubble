@@ -23,6 +23,7 @@
   let pageGeneration = 0;
   let authToken = "";
   let storageQueue = Promise.resolve();
+  let translationRequests = new Set();
 
   function getVideoId() {
     return new URLSearchParams(location.search).get("v") || "";
@@ -63,8 +64,9 @@
       return;
     }
 
+    const id = segment?.id || `live-${Math.max(0, Math.round(currentTime))}-${text.slice(0, 20)}`;
     if (isFallback) {
-      const segmentKey = segment ? `${segment.start_seconds}:${segment.end_seconds}:${segment.text}` : text;
+      const segmentKey = segment ? segment.id || `${segment.start_seconds}:${segment.end_seconds}:${segment.text}` : text;
       if (loggedFallbackSegments.has(segmentKey)) return;
       if (Date.now() - lastFallbackCaptionAt < FALLBACK_CAPTION_INTERVAL_MS) return;
       loggedFallbackSegments.add(segmentKey);
@@ -82,10 +84,72 @@
       lastCaptionText = captionKey;
       updateVideoState(getVideoId(), (state) => {
         const log = state.captionLog || [];
-        log.push({ timeText, text, savedAt: Date.now() });
+        const index = log.findIndex((entry) => entry.id === id);
+        const entry = {
+          ...(index >= 0 ? log[index] : {}),
+          id,
+          timeText,
+          text,
+          source_text: text,
+          start_seconds: segment?.start_seconds ?? currentTime,
+          end_seconds: segment?.end_seconds ?? currentTime,
+          translation_status: segment?.id ? "pending" : "skipped",
+          savedAt: Date.now(),
+        };
+        if (index >= 0) {
+          log[index] = entry;
+        } else {
+          log.push(entry);
+        }
         state.captionLog = log.slice(-MAX_CAPTIONS);
       });
+      if (segment?.id) requestTranslation(segment, text);
     }
+  }
+
+  async function requestTranslation(segment, sourceText) {
+    if (translationRequests.has(segment.id) || !authToken) return;
+    translationRequests.add(segment.id);
+    try {
+      const result = await fetchJson("/api/translations", {
+        method: "POST",
+        body: JSON.stringify({
+          id: segment.id,
+          source_text: sourceText,
+          context_before: nearbyText(segment.start_seconds, -1),
+          context_after: nearbyText(segment.end_seconds, 1),
+          target_language: "zh-TW",
+        }),
+      });
+      await updateCaptionTranslation(getVideoId(), result);
+    } catch (error) {
+      await updateCaptionTranslation(getVideoId(), {
+        id: segment.id,
+        status: "failed",
+        translated_text: "",
+        reason: error.message,
+      });
+    }
+  }
+
+  function nearbyText(seconds, direction) {
+    const sorted = [...transcriptSegments].sort((left, right) => left.start_seconds - right.start_seconds);
+    const index = sorted.findIndex((segment) => {
+      return seconds >= segment.start_seconds && seconds <= segment.end_seconds;
+    });
+    const neighbor = sorted[index + direction];
+    return neighbor?.text || "";
+  }
+
+  function updateCaptionTranslation(videoId, result) {
+    return updateVideoState(videoId, (state) => {
+      const log = state.captionLog || [];
+      const entry = log.find((item) => item.id === result.id);
+      if (!entry) return;
+      entry.translated_text = normalizeText(result.translated_text);
+      entry.translation_status = result.status || "translated";
+      entry.translation_reason = result.reason || "";
+    });
   }
 
   function clearCaptionLog() {
@@ -251,6 +315,7 @@
     bubbles = [];
     transcriptSegments = [];
     sentenceEntries = [];
+    translationRequests = new Set();
     lastCaptionText = "";
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
@@ -283,6 +348,7 @@
       transcriptSegments = [];
       sentenceEntries = [];
       bubbles = [];
+      translationRequests = new Set();
       shownKeys = new Set();
       loggedFallbackSegments = new Set();
       lastFallbackCaptionAt = 0;
@@ -334,7 +400,7 @@
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
-    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
+    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
 
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

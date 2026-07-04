@@ -142,6 +142,9 @@ def self_check_sentence_qc():
     assert not valid_concept_candidate({"concept": "bad"})
     assert valid_reviewer_result({"review_status": "accepted", "candidate": {}})
     assert not valid_reviewer_result({"review_status": "surprise"})
+    assert needs_translation_review("hello world", "", 0.9)
+    assert needs_translation_review("hello world", "哈囉世界", 0.5)
+    assert not needs_translation_review("hello world", "哈囉世界", 0.9)
     assert len(transcript_windows([{"id": str(index)} for index in range(90)], size=50, overlap=5)) == 2
     assert len(time_windows([
         {"start_seconds": 0, "end_seconds": 1, "text": "a"},

@@ -130,6 +130,78 @@ def valid_reviewer_result(result):
     if "candidate" in result and not isinstance(result["candidate"], dict):
         return False
     return True
+def translate_segment(segment_id, source_text, context_before="", context_after="", target_language="zh-TW"):
+    prompt = f"""
+You are the ContextBubble Translator Agent.
+Translate the English transcript segment into Traditional Chinese ({target_language}).
+Keep the translation concise for subtitle reading. Preserve technical terms when appropriate.
+Return JSON only with: id, translated_text, confidence.
+
+Context before:
+{context_before}
+
+Segment:
+{source_text}
+
+Context after:
+{context_after}
+
+ID: {segment_id}
+"""
+    result = llm_generate(prompt)
+    translated = {
+        "id": segment_id,
+        "translated_text": str(result.get("translated_text", "")).strip(),
+        "confidence": float(result.get("confidence", 0.0) or 0.0),
+    }
+    if needs_translation_review(source_text, translated["translated_text"], translated["confidence"]):
+        return review_translation(segment_id, source_text, translated["translated_text"], context_before, context_after)
+    return {**translated, "status": "translated", "reason": ""}
+
+
+def needs_translation_review(source_text, translated_text, confidence):
+    if confidence < 0.75:
+        return True
+    if not translated_text:
+        return True
+    if len(translated_text.split()) > max(8, len(source_text.split()) * 3):
+        return True
+    return False
+
+
+def review_translation(segment_id, source_text, translated_text, context_before="", context_after=""):
+    prompt = f"""
+You are the ContextBubble Translation Reviewer Agent.
+Review the Traditional Chinese translation against the English source.
+Fix missing meaning, hallucinated additions, awkward wording, and overly long subtitle text.
+Return JSON only with: id, status ("accepted", "revised", or "retry"), translated_text, reason.
+
+Context before:
+{context_before}
+
+Source:
+{source_text}
+
+Translation:
+{translated_text}
+
+Context after:
+{context_after}
+
+ID: {segment_id}
+"""
+    result = llm_generate(prompt)
+    status = result.get("status", "retry")
+    if status not in ("accepted", "revised", "retry"):
+        status = "retry"
+    text = str(result.get("translated_text", translated_text)).strip()
+    return {
+        "id": segment_id,
+        "status": "translated" if status in ("accepted", "revised") and text else "failed",
+        "translated_text": text,
+        "confidence": 0.72 if status == "revised" else 0.6,
+        "reason": str(result.get("reason", "")),
+    }
 def heuristic_concept_agent(segments, learner_level):
     keywords = (
         "embedding", "embeddings", "cosine similarity", "retrieval augmented generation",

@@ -38,6 +38,11 @@ h1 {
   font-size: 12px;
 }
 
+.translation {
+  margin-top: 6px;
+  color: #0f5132;
+}
+
 .debug {
   margin-top: 6px;
   color: #666;

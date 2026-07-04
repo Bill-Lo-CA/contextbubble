@@ -1,7 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-python backend/server.py --check
+PYTHON="${PYTHON:-python}"
+if [ -x ".venv/bin/python" ]; then
+  PYTHON=".venv/bin/python"
+fi
+
+"$PYTHON" backend/server.py --check
 node --check extension/backendClient.js
 node --check extension/contentOverlay.js
 node --check extension/content.js

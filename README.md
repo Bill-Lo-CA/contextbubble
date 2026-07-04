@@ -78,6 +78,9 @@ $HOME/tools/whisper.cpp/models/ggml-base.en.bin
 From the repo root:
 
 ```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
 python backend/server.py
 ```
 
@@ -119,7 +122,7 @@ checks without requiring `yt-dlp`, `ffmpeg`, Whisper, Gemini, or Ollama.
 
 ## Implementation Notes
 
-Backend code is split by responsibility across small stdlib modules:
+Backend code is split by responsibility across small modules:
 `server.py`, `config.py`, `auth.py`, `db.py`, `transcripts.py`, `media.py`,
 `agents.py`, `jobs.py`, `checks.py`, and `providers.py`. The extension keeps
 shared backend fetch handling in `extension/backendClient.js` and bubble

@@ -41,8 +41,24 @@ function renderSentences(entries = []) {
     time.className = "time";
     time.textContent = entry.timeText || `${formatTime(entry.start_seconds)}-${formatTime(entry.end_seconds)}`;
     const text = document.createElement("div");
-    text.textContent = normalizeText(entry.text);
+    text.textContent = normalizeText(entry.source_text || entry.text);
     item.append(time, text);
+    if (entry.translated_text) {
+      const translation = document.createElement("div");
+      translation.className = "translation";
+      translation.textContent = normalizeText(entry.translated_text);
+      item.append(translation);
+    } else if (entry.translation_status === "pending") {
+      const pending = document.createElement("div");
+      pending.className = "debug";
+      pending.textContent = "Translating...";
+      item.append(pending);
+    } else if (entry.translation_status === "failed") {
+      const failed = document.createElement("div");
+      failed.className = "debug";
+      failed.textContent = "Translation failed.";
+      item.append(failed);
+    }
     if (entry.source_segment_ids?.length) {
       const debug = document.createElement("details");
       debug.className = "debug";
@@ -63,7 +79,10 @@ function renderCaptions(log = []) {
     id: `caption-${index}`,
     start_seconds: 0,
     end_seconds: 0,
-    text: normalizeText(entry.text),
+    text: normalizeText(entry.source_text || entry.text),
+    source_text: normalizeText(entry.source_text || entry.text),
+    translated_text: normalizeText(entry.translated_text),
+    translation_status: entry.translation_status || "",
     timeText: entry.timeText || "",
     source_segment_ids: [],
   })));
