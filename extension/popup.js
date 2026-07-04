@@ -2,28 +2,35 @@ const analyze = document.getElementById("analyze");
 const reanalyze = document.getElementById("reanalyze");
 const openCaptions = document.getElementById("open-captions");
 const pair = document.getElementById("pair");
+const resendCode = document.getElementById("resend-code");
 const checkBackend = document.getElementById("check-backend");
-const pairingCode = document.getElementById("pairing-code");
+const pairingDigits = Array.from(document.querySelectorAll(".pairing-digit"));
 const demoMode = document.getElementById("demo-mode");
 const learnerLevel = document.getElementById("learner-level");
 const status = document.getElementById("status");
-const API_BASE = "http://127.0.0.1:8000";
-const STATUS_KEY = "contextbubbleStatus";
 const SESSION_TOKEN_KEY = "contextbubbleSessionToken";
-
-chrome.storage.session.get(STATUS_KEY, (saved) => {
-  if (saved[STATUS_KEY]) status.textContent = saved[STATUS_KEY];
-});
+const BY_VIDEO_KEY = "contextbubbleByVideo";
+let activeVideoId = "";
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "session" && changes[STATUS_KEY]) {
-    status.textContent = changes[STATUS_KEY].newValue;
+  if (area === "local" && changes[BY_VIDEO_KEY] && activeVideoId) {
+    const text = changes[BY_VIDEO_KEY].newValue?.[activeVideoId]?.status;
+    if (text) status.textContent = text;
   }
 });
 
 function setStatus(text) {
   status.textContent = text;
-  chrome.storage.session.set({ [STATUS_KEY]: text });
+  if (activeVideoId) {
+    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+      const byVideo = saved[BY_VIDEO_KEY] || {};
+      const state = byVideo[activeVideoId] || {};
+      state.status = text;
+      state.updatedAt = Date.now();
+      byVideo[activeVideoId] = state;
+      chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo });
+    });
+  }
 }
 
 function getVideoId(tab) {
@@ -35,43 +42,45 @@ async function sessionToken() {
   return saved[SESSION_TOKEN_KEY] || "";
 }
 
-async function fetchBackend(path, options = {}) {
-  let response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, options);
-  } catch {
-    throw new Error("Backend not running or unreachable.");
-  }
-  let result;
-  try {
-    result = await response.json();
-  } catch {
-    throw new Error("Backend returned an invalid response.");
-  }
-  if (!response.ok) {
-    if (response.status === 401 && path !== "/api/pair") throw new Error("Invalid or expired session.");
-    throw new Error(result.error || "Backend request failed.");
-  }
-  return result;
-}
-
 async function pairBackend() {
-  const code = pairingCode.value.trim();
+  const code = pairingDigits.map((input) => input.value).join("");
   if (!code) throw new Error("Enter the backend pairing code.");
-  const result = await fetchBackend("/api/pair", {
+  if (!/^\d{6}$/.test(code)) throw new Error("Enter the six digit pairing code.");
+  const result = await contextbubbleBackend.fetchJson("/api/pair", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ pairing_code: code }),
   });
   await chrome.storage.session.set({ [SESSION_TOKEN_KEY]: result.session_token });
-  pairingCode.value = "";
+  clearPairingCode();
   return result;
+}
+
+async function resendPairingCode() {
+  await contextbubbleBackend.fetchJson("/api/pair/resend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+}
+
+function clearPairingCode() {
+  for (const input of pairingDigits) input.value = "";
+}
+
+function fillPairingCode(text, startIndex = 0) {
+  const digits = String(text || "").replace(/\D/g, "").slice(0, 6 - startIndex);
+  digits.split("").forEach((digit, offset) => {
+    pairingDigits[startIndex + offset].value = digit;
+  });
+  const next = Math.min(startIndex + digits.length, pairingDigits.length - 1);
+  pairingDigits[next]?.focus();
 }
 
 async function checkBackendConnection() {
   const token = await sessionToken();
   if (!token) throw new Error("Pair the backend first.");
-  await fetchBackend("/api/health", {
+  await contextbubbleBackend.fetchJson("/api/health", {
     headers: { "authorization": `Bearer ${token}` },
   });
 }
@@ -102,8 +111,34 @@ async function getActiveYoutubeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const videoId = tab ? getVideoId(tab) : "";
   if (!tab?.id || !videoId) throw new Error("Open a YouTube watch page first.");
+  activeVideoId = videoId;
   return tab;
 }
+
+async function loadActiveStatus() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  activeVideoId = tab ? getVideoId(tab) : "";
+  if (!activeVideoId) return;
+  const saved = await chrome.storage.local.get(BY_VIDEO_KEY);
+  const text = saved[BY_VIDEO_KEY]?.[activeVideoId]?.status;
+  if (text) status.textContent = text;
+}
+
+loadActiveStatus();
+
+pairingDigits.forEach((input, index) => {
+  input.addEventListener("input", () => {
+    fillPairingCode(input.value, index);
+    if (input.value && index < pairingDigits.length - 1) pairingDigits[index + 1].focus();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Backspace" && !input.value && index > 0) pairingDigits[index - 1].focus();
+  });
+  input.addEventListener("paste", (event) => {
+    event.preventDefault();
+    fillPairingCode(event.clipboardData.getData("text"), index);
+  });
+});
 
 openCaptions.addEventListener("click", async () => {
   try {
@@ -124,6 +159,21 @@ pair.addEventListener("click", async () => {
     setStatus(error.message);
   } finally {
     pair.disabled = false;
+  }
+});
+
+resendCode.addEventListener("click", async () => {
+  resendCode.disabled = true;
+  setStatus("Requesting a new pairing code...");
+  try {
+    await resendPairingCode();
+    clearPairingCode();
+    pairingDigits[0]?.focus();
+    setStatus("New pairing code printed in the backend terminal.");
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    resendCode.disabled = false;
   }
 });
 

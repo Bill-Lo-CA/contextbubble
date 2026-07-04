@@ -29,6 +29,24 @@ select {
   font: inherit;
 }
 
+.pairing-code {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.pairing-digit {
+  width: 100%;
+  aspect-ratio: 1;
+  margin: 0;
+  border: 1px solid #b8c0cc;
+  border-radius: 6px;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .inline {
   display: flex;
   gap: 8px;

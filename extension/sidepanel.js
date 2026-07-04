@@ -1,12 +1,25 @@
-const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
-const SENTENCE_ENTRIES_KEY = "contextbubbleSentenceEntries";
+const BY_VIDEO_KEY = "contextbubbleByVideo";
+const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
 const captions = document.getElementById("captions");
+let activeVideoId = "";
+
+function getVideoId(url) {
+  try {
+    return new URL(url).searchParams.get("v") || "";
+  } catch {
+    return "";
+  }
+}
 
 function formatTime(seconds) {
   seconds = Math.max(0, Math.round(seconds || 0));
   const minutes = String(Math.floor(seconds / 60)).padStart(2, "0");
   const secs = String(seconds % 60).padStart(2, "0");
   return `${minutes}:${secs}`;
+}
+
+function normalizeText(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
 }
 
 function renderSentences(entries = []) {
@@ -26,7 +39,7 @@ function renderSentences(entries = []) {
     time.className = "time";
     time.textContent = entry.timeText || `${formatTime(entry.start_seconds)}-${formatTime(entry.end_seconds)}`;
     const text = document.createElement("div");
-    text.textContent = entry.text || "";
+    text.textContent = normalizeText(entry.text);
     item.append(time, text);
     if (entry.source_segment_ids?.length) {
       const debug = document.createElement("details");
@@ -48,33 +61,50 @@ function renderCaptions(log = []) {
     id: `caption-${index}`,
     start_seconds: 0,
     end_seconds: 0,
-    text: entry.text || "",
+    text: normalizeText(entry.text),
     timeText: entry.timeText || "",
     source_segment_ids: [],
   })));
 }
 
 function renderSaved(saved) {
-  const sentences = saved[SENTENCE_ENTRIES_KEY] || [];
+  const byVideo = saved[BY_VIDEO_KEY] || {};
+  const state = byVideo[activeVideoId] || latestVideoState(byVideo);
+  const sentences = state.sentenceEntries || [];
   if (sentences.length) {
     renderSentences(sentences);
     return;
   }
-  renderCaptions(saved[CAPTION_LOG_KEY] || []);
+  renderCaptions(state.captionLog || []);
 }
 
-chrome.storage.local.get([SENTENCE_ENTRIES_KEY, CAPTION_LOG_KEY], renderSaved);
+function latestVideoState(byVideo) {
+  return Object.values(byVideo).sort((left, right) => {
+    return (right.updatedAt || 0) - (left.updatedAt || 0);
+  })[0] || {};
+}
+
+async function refreshActiveVideo() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const saved = await chrome.storage.local.get([BY_VIDEO_KEY, ACTIVE_VIDEO_KEY]);
+  activeVideoId = saved[ACTIVE_VIDEO_KEY] || getVideoId(tab?.url || "");
+  renderSaved(saved);
+}
+
+refreshActiveVideo();
+
+chrome.tabs.onActivated?.addListener(refreshActiveVideo);
+chrome.tabs.onUpdated?.addListener((_tabId, changeInfo) => {
+  if (changeInfo.url || changeInfo.status === "complete") refreshActiveVideo();
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
-  if (changes[SENTENCE_ENTRIES_KEY]) {
-    const entries = changes[SENTENCE_ENTRIES_KEY].newValue || [];
-    if (entries.length) {
-      renderSentences(entries);
-      return;
-    }
+  if (changes[BY_VIDEO_KEY]) {
+    chrome.storage.local.get(BY_VIDEO_KEY, renderSaved);
   }
-  if (changes[CAPTION_LOG_KEY]) {
-    chrome.storage.local.get([SENTENCE_ENTRIES_KEY, CAPTION_LOG_KEY], renderSaved);
+  if (changes[ACTIVE_VIDEO_KEY]) {
+    activeVideoId = changes[ACTIVE_VIDEO_KEY].newValue || "";
+    chrome.storage.local.get(BY_VIDEO_KEY, renderSaved);
   }
 });

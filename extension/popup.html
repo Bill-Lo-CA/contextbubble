@@ -13,9 +13,17 @@
       <option value="intermediate">Intermediate</option>
       <option value="advanced">Advanced</option>
     </select>
-    <label for="pairing-code">Pairing code</label>
-    <input id="pairing-code" type="text" inputmode="numeric" autocomplete="off">
+    <label for="pairing-code-1">Pairing code</label>
+    <div class="pairing-code" aria-label="Pairing code">
+      <input id="pairing-code-1" class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+      <input class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+      <input class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+      <input class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+      <input class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+      <input class="pairing-digit" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1">
+    </div>
     <button id="pair" type="button">Pair Backend</button>
+    <button id="resend-code" type="button">Resend Code</button>
     <button id="check-backend" type="button">Check Backend</button>
     <label class="inline">
       <input id="demo-mode" type="checkbox">
@@ -25,6 +33,7 @@
     <button id="analyze" type="button">Analyze Video</button>
     <button id="reanalyze" type="button">Re-analyze</button>
     <p id="status">Open a YouTube video, start the backend, then analyze.</p>
+    <script src="backendClient.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

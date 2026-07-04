@@ -111,21 +111,44 @@ explicit fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
 ## Validate
 
 ```sh
-python backend/server.py --check
-node --check extension/content.js
-node --check extension/popup.js
-node --check extension/sidepanel.js
+scripts/check.sh
 ```
+
+`scripts/check.sh` runs the backend self-check and extension JavaScript syntax
+checks without requiring `yt-dlp`, `ffmpeg`, Whisper, Gemini, or Ollama.
+
+## Implementation Notes
+
+Backend code is split by responsibility across small stdlib modules:
+`server.py`, `config.py`, `auth.py`, `db.py`, `transcripts.py`, `media.py`,
+`agents.py`, `jobs.py`, `checks.py`, and `providers.py`. The extension keeps
+shared backend fetch handling in `extension/backendClient.js` and bubble
+rendering in `extension/contentOverlay.js`.
+
+## Local Auth Model
+
+The backend is a local-dev service bound to `127.0.0.1`. It prints an admin
+bearer token and a one-use pairing code to the terminal at startup. The popup
+uses six single-digit inputs for the pairing code. If the code expires, the
+popup can request a new code; the backend prints that code to the terminal and
+does not return it to the browser. The extension stores only the resulting
+session token in `chrome.storage.session`.
+
+This is prototype local auth, not production auth. CORS is intentionally narrow:
+pairing is for extension origins, and protected routes still require an admin or
+session bearer token. Local non-browser processes are not constrained by CORS and
+must still know a valid token for protected routes.
 
 ## Current Limits
 
 - YouTube caption fetch depends on `yt-dlp` and caption availability.
 - Whole-video ASR fallback downloads full audio once, then processes local overlapping chunks.
-- Pairing codes are one-use and expire after five minutes; restart the local backend to print a new code.
+- Pairing codes are one-use and expire after five minutes; use **Resend Code** in the popup to print a fresh code in the backend terminal.
 - Only one ASR preparation runs at a time in the local backend process.
 - The stored demo transcript fixture is only available through explicit Demo mode or the demo video allowlist.
 - Preparation jobs, chunks, transcripts, analyses, and bubbles persist in `backend/.contextbubble/contextbubble.sqlite3`.
 - The extension stores only a paired session token in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
+- Transcript, caption, and popup status state is scoped by YouTube video in extension local storage.
 - External-tool failures are logged to `backend/.contextbubble/jobs.log` with bounded stderr tails.
 - The agent workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini or `AGENT_MODE=ollama` to use Ollama.
 - The Side Panel shows prepared sentence cards after analysis is ready and falls back to live caption debug text before then.

@@ -1,13 +1,9 @@
 (function () {
   const SCRIPT_VERSION = 2;
-  const API_BASE = "http://127.0.0.1:8000";
-  const CAPTION_LOG_KEY = "contextbubbleCaptionLog";
-  const SENTENCE_ENTRIES_KEY = "contextbubbleSentenceEntries";
-  const STATUS_KEY = "contextbubbleStatus";
+  const BY_VIDEO_KEY = "contextbubbleByVideo";
+  const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
   const MAX_CAPTIONS = 120;
   const FALLBACK_CAPTION_INTERVAL_MS = 4500;
-  const SAFE_SLOTS = ["top-right", "top-left", "middle-right", "middle-left", "bottom-right", "bottom-left"];
-  const TOP_SLOTS = ["top-right", "top-left", "middle-right", "middle-left"];
 
   globalThis.__contextbubbleCleanup?.();
   globalThis.__contextbubbleVersion = SCRIPT_VERSION;
@@ -18,7 +14,6 @@
   let sentenceEntries = [];
   let shownKeys = new Set();
   let activeVideoId;
-  let visibleBubbles = [];
   let trackedVideo;
   let lastCaptionText = "";
   let lastFallbackCaptionAt = 0;
@@ -41,35 +36,15 @@
     return document.querySelector(".html5-video-player") || findVideo()?.parentElement;
   }
 
-  function clearVisibleBubbles() {
-    for (const item of visibleBubbles) {
-      clearTimeout(item.timer);
-      item.root.remove();
-    }
-    visibleBubbles = [];
-    document.getElementById("contextbubble-layer")?.remove();
-  }
-
-  function ensureLayer() {
-    const player = findPlayer();
-    if (!player) return null;
-    if (getComputedStyle(player).position === "static") {
-      player.style.position = "relative";
-    }
-    let layer = player.querySelector("#contextbubble-layer");
-    if (!layer) {
-      layer = document.createElement("div");
-      layer.id = "contextbubble-layer";
-      player.appendChild(layer);
-    }
-    return layer;
-  }
-
   function readCaptionText() {
     return Array.from(document.querySelectorAll(".ytp-caption-segment"))
       .map((segment) => segment.textContent.trim())
       .filter(Boolean)
       .join(" ");
+  }
+
+  function normalizeText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
   }
 
   function formatTime(seconds) {
@@ -81,6 +56,7 @@
   }
 
   function appendCaptionLog(text, currentTime, segment, isFallback = false) {
+    text = normalizeText(text);
     if (!text) {
       lastCaptionText = "";
       return;
@@ -103,10 +79,10 @@
 
     if (captionKey !== lastCaptionText) {
       lastCaptionText = captionKey;
-      chrome.storage.local.get(CAPTION_LOG_KEY, (saved) => {
-        const log = saved[CAPTION_LOG_KEY] || [];
+      updateVideoState(getVideoId(), (state) => {
+        const log = state.captionLog || [];
         log.push({ timeText, text, savedAt: Date.now() });
-        chrome.storage.local.set({ [CAPTION_LOG_KEY]: log.slice(-MAX_CAPTIONS) });
+        state.captionLog = log.slice(-MAX_CAPTIONS);
       });
     }
   }
@@ -115,11 +91,32 @@
     lastCaptionText = "";
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
-    chrome.storage.local.set({ [CAPTION_LOG_KEY]: [] });
+    updateVideoState(getVideoId(), (state) => {
+      state.captionLog = [];
+    });
   }
 
   function storeSentenceEntries(entries) {
-    chrome.storage.local.set({ [SENTENCE_ENTRIES_KEY]: entries });
+    updateVideoState(getVideoId(), (state) => {
+      state.sentenceEntries = entries;
+    });
+  }
+
+  function updateVideoState(videoId, mutate) {
+    if (!videoId) return;
+    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+      const byVideo = saved[BY_VIDEO_KEY] || {};
+      const state = byVideo[videoId] || {};
+      mutate(state);
+      state.updatedAt = Date.now();
+      byVideo[videoId] = state;
+      chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo });
+    });
+  }
+
+  function setActiveVideo(videoId) {
+    if (!videoId) return;
+    chrome.storage.local.set({ [ACTIVE_VIDEO_KEY]: videoId });
   }
 
   function appendTranscriptSegments(segments) {
@@ -130,14 +127,16 @@
       const key = `${segment.start_seconds}:${segment.end_seconds}:${segment.text}`;
       if (!existing.has(key)) {
         existing.add(key);
-        transcriptSegments.push(segment);
+        transcriptSegments.push({ ...segment, text: normalizeText(segment.text) });
       }
     }
     transcriptSegments.sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
   function appendSentenceEntries(entries) {
-    sentenceEntries = [...entries].sort((left, right) => left.start_seconds - right.start_seconds);
+    sentenceEntries = entries
+      .map((entry) => ({ ...entry, text: normalizeText(entry.text) }))
+      .sort((left, right) => left.start_seconds - right.start_seconds);
     storeSentenceEntries(sentenceEntries);
   }
 
@@ -163,27 +162,13 @@
   }
 
   async function fetchJson(path, options = {}) {
-    let response;
-    try {
-      response = await fetch(`${API_BASE}${path}`, { ...options, headers: authHeaders() });
-    } catch {
-      throw new Error("Backend not running or unreachable.");
-    }
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      throw new Error("Backend returned an invalid response.");
-    }
-    if (!response.ok) {
-      if (response.status === 401) throw new Error("Invalid or expired session.");
-      throw new Error(result.error || "Backend request failed.");
-    }
-    return result;
+    return globalThis.contextbubbleBackend.fetchJson(path, { ...options, headers: authHeaders() });
   }
 
   function setSharedStatus(text) {
-    chrome.storage.session.set({ [STATUS_KEY]: text });
+    updateVideoState(getVideoId(), (state) => {
+      state.status = text;
+    });
   }
 
   function stageText(job) {
@@ -240,6 +225,27 @@
     return Boolean(readCaptionText()) || Boolean(player && !player.classList.contains("ytp-autohide"));
   }
 
+  const overlay = globalThis.contextbubbleOverlay.create({
+    findPlayer,
+    captionsOrControlsVisible,
+  });
+
+  function enterVideo(videoId, currentVideo) {
+    if (activeVideoId === videoId) return;
+    activeVideoId = videoId;
+    setActiveVideo(videoId);
+    pageGeneration += 1;
+    shownKeys = new Set();
+    bubbles = [];
+    transcriptSegments = [];
+    sentenceEntries = [];
+    lastCaptionText = "";
+    lastFallbackCaptionAt = 0;
+    loggedFallbackSegments = new Set();
+    lastVideoTime = currentVideo?.currentTime || 0;
+    overlay.clear();
+  }
+
   async function startAnalysis({ learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
@@ -247,11 +253,12 @@
 
     const videoId = getVideoId();
     const currentVideo = findVideo();
-    const requestGeneration = pageGeneration;
     try {
       if (!videoId) throw new Error("Open a YouTube watch page first.");
       if (!currentVideo) throw new Error("No YouTube video element found.");
       if (!authToken) throw new Error("Pair the backend first.");
+      enterVideo(videoId, currentVideo);
+      const requestGeneration = pageGeneration;
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
       job = await pollPreparation(job);
@@ -266,10 +273,14 @@
       shownKeys = new Set();
       loggedFallbackSegments = new Set();
       lastFallbackCaptionAt = 0;
-      clearVisibleBubbles();
+      overlay.clear();
       appendTranscriptSegments(job.segments || []);
       appendSentenceEntries(job.sentence_entries || []);
       appendBubbles(job.bubbles || []);
+      updateVideoState(videoId, (state) => {
+        state.jobId = job.job_id;
+        state.status = "Ready.";
+      });
 
       return {
         videoId,
@@ -285,111 +296,22 @@
     }
   }
 
-  function removeBubble(root) {
-    const item = visibleBubbles.find((entry) => entry.root === root);
-    if (item) clearTimeout(item.timer);
-    root.remove();
-    visibleBubbles = visibleBubbles.filter((entry) => entry.root !== root);
-  }
-
-  function scheduleRemoval(item) {
-    clearTimeout(item.timer);
-    if (item.expanded) return;
-    item.startedAt = Date.now();
-    item.timer = setTimeout(() => removeBubble(item.root), item.remainingMs);
-  }
-
-  function pauseRemoval(item) {
-    if (item.expanded) return;
-    clearTimeout(item.timer);
-    item.remainingMs = Math.max(0, item.remainingMs - (Date.now() - item.startedAt));
-  }
-
-  function availableSlot() {
-    if (visibleBubbles.length >= 2) return "";
-    const used = new Set(visibleBubbles.map((item) => item.slot));
-    const slots = captionsOrControlsVisible() ? TOP_SLOTS : SAFE_SLOTS;
-    return slots.find((slot) => !used.has(slot)) || "";
-  }
-
-  function showBubble(bubble) {
-    const slot = availableSlot();
-    const layer = ensureLayer();
-    if (!slot || !layer) return false;
-
-    const root = document.createElement("aside");
-    root.className = `contextbubble-bubble contextbubble-slot-${slot}`;
-    root.innerHTML = `
-      <div class="contextbubble-title"></div>
-      <div class="contextbubble-text"></div>
-      <div class="contextbubble-actions">
-        <button type="button" data-action="expand">Expand</button>
-        <button type="button" data-action="known">I know this</button>
-        <button type="button" data-action="dismiss">Dismiss</button>
-      </div>
-    `;
-
-    root.querySelector(".contextbubble-title").textContent = bubble.concept;
-    layer.appendChild(root);
-    const item = { bubble, root, slot, expanded: false, timer: 0, remainingMs: 8000, startedAt: 0 };
-    visibleBubbles.push(item);
-    renderText(item);
-    root.addEventListener("click", handleBubbleClick);
-    root.addEventListener("mouseenter", () => pauseRemoval(item));
-    root.addEventListener("mouseleave", () => scheduleRemoval(item));
-    scheduleRemoval(item);
-    return true;
-  }
-
-  function renderText(item) {
-    const text = item.expanded
-      ? `${item.bubble.short_explanation} ${item.bubble.expanded_explanation || ""}`
-      : item.bubble.short_explanation;
-    item.root.querySelector(".contextbubble-text").textContent = text;
-    item.root.querySelector('[data-action="expand"]').textContent = item.expanded ? "Collapse" : "Expand";
-  }
-
-  function handleBubbleClick(event) {
-    const action = event.target?.dataset?.action;
-    const item = visibleBubbles.find((entry) => entry.root === event.currentTarget);
-    if (!item) return;
-    if (action === "dismiss" || action === "known") removeBubble(item.root);
-    if (action === "expand") {
-      item.expanded = !item.expanded;
-      item.remainingMs = 8000;
-      renderText(item);
-      scheduleRemoval(item);
-    }
-  }
-
   function tick() {
     const currentVideo = findVideo();
     const videoId = getVideoId();
 
     if (!currentVideo || !videoId) return;
     if (trackedVideo !== currentVideo) {
-      if (trackedVideo) trackedVideo.removeEventListener("seeking", clearVisibleBubbles);
+      if (trackedVideo) trackedVideo.removeEventListener("seeking", overlay.clear);
       trackedVideo = currentVideo;
-      trackedVideo.addEventListener("seeking", clearVisibleBubbles);
+      trackedVideo.addEventListener("seeking", overlay.clear);
     }
 
     if (activeVideoId !== videoId) {
-      activeVideoId = videoId;
-      pageGeneration += 1;
-      shownKeys = new Set();
-      bubbles = [];
-      transcriptSegments = [];
-      sentenceEntries = [];
-      lastCaptionText = "";
-      lastFallbackCaptionAt = 0;
-      loggedFallbackSegments = new Set();
-      lastVideoTime = currentVideo.currentTime;
-      clearCaptionLog();
-      storeSentenceEntries([]);
-      clearVisibleBubbles();
+      enterVideo(videoId, currentVideo);
     }
     if (Math.abs(currentVideo.currentTime - lastVideoTime) > 2.5) {
-      clearVisibleBubbles();
+      overlay.clear();
     }
     lastVideoTime = currentVideo.currentTime;
 
@@ -416,7 +338,7 @@
     });
 
     if (dueBubble) {
-      if (showBubble(dueBubble)) {
+      if (overlay.show(dueBubble)) {
         shownKeys.add(`${videoId}:${dueBubble.concept}:${dueBubble.start_seconds}`);
       }
     }
@@ -434,8 +356,8 @@
   const tickTimer = setInterval(tick, 500);
   globalThis.__contextbubbleCleanup = () => {
     clearInterval(tickTimer);
-    if (trackedVideo) trackedVideo.removeEventListener("seeking", clearVisibleBubbles);
-    clearVisibleBubbles();
+    if (trackedVideo) trackedVideo.removeEventListener("seeking", overlay.clear);
+    overlay.clear();
     chrome.runtime.onMessage.removeListener(handleMessage);
   };
 })();
