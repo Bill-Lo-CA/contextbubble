@@ -1,2 +1,96 @@
+# ContextBubble local/spec workspace
 contextbubble-spec/
+
+# Backend local runtime state
 backend/.contextbubble/
+backend/media/
+backend/tmp/
+backend/temp/
+backend/*.log
+backend/**/*.log
+
+# SQLite databases and sidecar files
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+*.token
+*.key
+*.pem
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# Local ASR/audio/video scratch files
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.mp4
+*.mkv
+*.webm
+*.part
+*.ytdl
+
+# Keep checked-in demo fixtures even if they are subtitle/media-like files
+!backend/fixtures/**
+
+# Node / extension development artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+coverage/
+*.crx
+*.pem.pub
+extension/*.zip
+extension/*.crx
+
+# Browser / local debug artifacts
+chrome-profile/
+chrome-user-data/
+*.har
+
+# Editor and OS files
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Codex / agent local scratch files
+.codex/sessions/
+.codex/tmp/
+.codex/logs/
+AGENT_NOTES.local.md
+*.local.md
