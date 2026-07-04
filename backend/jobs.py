@@ -121,14 +121,14 @@ def job_payload(job_id, include_ready=True, include_transcript=False, include_se
     payload = dict(job)
     if payload["chunks_total"]:
         payload["progress"] = payload["chunks_completed"] / payload["chunks_total"]
+    transcript = load_transcript(payload["transcript_id"]) if payload.get("transcript_id") else None
+    segments = transcript["segments"] if transcript else []
+    if include_transcript and segments:
+        payload["segments"] = segments
+    if include_sentence_entries and segments:
+        payload["sentence_entries"] = sentence_entries(segments)
     if include_ready and payload["status"] == "ready":
-        transcript = load_transcript(payload["transcript_id"])
         analysis = analysis_result(payload["analysis_id"])
-        segments = transcript["segments"] if transcript else []
-        if include_transcript:
-            payload["segments"] = segments
-        if include_sentence_entries:
-            payload["sentence_entries"] = sentence_entries(segments)
         payload["bubbles"] = analysis["bubbles"] if analysis else []
         payload["bubble_count"] = len(payload["bubbles"])
     return payload

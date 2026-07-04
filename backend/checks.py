@@ -64,6 +64,7 @@ Line one
 line two
 """
     assert parse_subtitles(multiline)[0]["text"] == "Line one line two"
+    assert parse_subtitles(multiline.replace("Line one", "&gt;&gt; Speaker"))[0]["text"] == ">> Speaker line two"
 
 
 def self_check_subtitle_fixtures():

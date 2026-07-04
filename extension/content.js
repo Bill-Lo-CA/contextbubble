@@ -22,6 +22,7 @@
   let analysisRunning = false;
   let pageGeneration = 0;
   let authToken = "";
+  let storageQueue = Promise.resolve();
 
   function getVideoId() {
     return new URLSearchParams(location.search).get("v") || "";
@@ -96,27 +97,38 @@
     });
   }
 
-  function storeSentenceEntries(entries) {
-    updateVideoState(getVideoId(), (state) => {
-      state.sentenceEntries = entries;
-    });
-  }
-
   function updateVideoState(videoId, mutate) {
-    if (!videoId) return;
-    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
-      const byVideo = saved[BY_VIDEO_KEY] || {};
-      const state = byVideo[videoId] || {};
-      mutate(state);
-      state.updatedAt = Date.now();
-      byVideo[videoId] = state;
-      chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo });
+    if (!videoId) return Promise.resolve();
+    storageQueue = storageQueue.then(() => new Promise((resolve) => {
+      chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+        const byVideo = saved[BY_VIDEO_KEY] || {};
+        const state = byVideo[videoId] || {};
+        mutate(state);
+        state.updatedAt = Date.now();
+        byVideo[videoId] = state;
+        chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo }, resolve);
+      });
+    }));
+    storageQueue = storageQueue.catch((error) => {
+      console.warn("[ContextBubble] storage update failed", error);
     });
+    return storageQueue;
   }
 
   function setActiveVideo(videoId) {
     if (!videoId) return;
     chrome.storage.local.set({ [ACTIVE_VIDEO_KEY]: videoId });
+  }
+
+  async function resetStoredCaptions(videoId) {
+    lastCaptionText = "";
+    lastFallbackCaptionAt = 0;
+    loggedFallbackSegments = new Set();
+    await updateVideoState(videoId, (state) => {
+      state.captionLog = [];
+      state.sentenceEntries = [];
+      state.status = "Re-analyzing...";
+    });
   }
 
   function appendTranscriptSegments(segments) {
@@ -137,7 +149,6 @@
     sentenceEntries = entries
       .map((entry) => ({ ...entry, text: normalizeText(entry.text) }))
       .sort((left, right) => left.start_seconds - right.start_seconds);
-    storeSentenceEntries(sentenceEntries);
   }
 
   function appendBubbles(nextBubbles) {
@@ -206,10 +217,11 @@
     let lastMove = Date.now();
     while (true) {
       setSharedStatus(stageText(job));
+      appendTranscriptSegments(job.segments || []);
       if (job.status === "ready") return job;
       if (job.status === "failed") throw new Error(job.message || "Preparation failed.");
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      job = await fetchJson(`/api/preparations/${job.job_id}`);
+      job = await fetchJson(`/api/preparations/${job.job_id}?include_transcript=true`);
       if (job.updated_at && job.updated_at !== lastUpdated) {
         lastUpdated = job.updated_at;
         lastMove = Date.now();
@@ -258,6 +270,7 @@
       if (!currentVideo) throw new Error("No YouTube video element found.");
       if (!authToken) throw new Error("Pair the backend first.");
       enterVideo(videoId, currentVideo);
+      if (forceRefresh) await resetStoredCaptions(videoId);
       const requestGeneration = pageGeneration;
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
@@ -277,9 +290,11 @@
       appendTranscriptSegments(job.segments || []);
       appendSentenceEntries(job.sentence_entries || []);
       appendBubbles(job.bubbles || []);
-      updateVideoState(videoId, (state) => {
+      await updateVideoState(videoId, (state) => {
         state.jobId = job.job_id;
         state.status = "Ready.";
+        state.sentenceEntries = sentenceEntries;
+        state.captionLog = state.captionLog || [];
       });
 
       return {
@@ -315,13 +330,11 @@
     }
     lastVideoTime = currentVideo.currentTime;
 
-    if (!sentenceEntries.length) {
-      const visibleCaptionText = readCaptionText();
-      const activeSegment = transcriptSegments.find((segment) => {
-        return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
-      });
-      appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
-    }
+    const visibleCaptionText = readCaptionText();
+    const activeSegment = transcriptSegments.find((segment) => {
+      return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
+    });
+    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, visibleCaptionText ? null : activeSegment, !visibleCaptionText);
 
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

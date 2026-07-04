@@ -21,16 +21,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 function setStatus(text) {
   status.textContent = text;
-  if (activeVideoId) {
-    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
-      const byVideo = saved[BY_VIDEO_KEY] || {};
-      const state = byVideo[activeVideoId] || {};
-      state.status = text;
-      state.updatedAt = Date.now();
-      byVideo[activeVideoId] = state;
-      chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo });
-    });
-  }
 }
 
 function getVideoId(tab) {

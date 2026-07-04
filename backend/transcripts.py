@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import re
 
@@ -19,6 +20,7 @@ def parse_time(value):
 def clean_caption_text(lines):
     text = " ".join(line.strip() for line in lines if line.strip())
     text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 def normalize_caption_segments(segments):

@@ -2,6 +2,7 @@ const BY_VIDEO_KEY = "contextbubbleByVideo";
 const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
 const captions = document.getElementById("captions");
 let activeVideoId = "";
+let debugInfo = {};
 
 function getVideoId(url) {
   try {
@@ -24,6 +25,7 @@ function normalizeText(text) {
 
 function renderSentences(entries = []) {
   captions.textContent = "";
+  renderDebug();
   if (!entries.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
@@ -69,25 +71,62 @@ function renderCaptions(log = []) {
 
 function renderSaved(saved) {
   const byVideo = saved[BY_VIDEO_KEY] || {};
-  const state = byVideo[activeVideoId] || latestVideoState(byVideo);
+  const keys = Object.keys(byVideo);
+  const stateInfo = stateToRender(byVideo);
+  const state = stateInfo.state;
+  debugInfo = {
+    storedKeys: keys,
+    activeVideoId,
+    selectedKey: stateInfo.key,
+    selectedSentenceCount: state.sentenceEntries?.length || 0,
+    selectedCaptionCount: state.captionLog?.length || 0,
+  };
+  console.log("[ContextBubble SidePanel]", debugInfo);
+  if (state.captionLog?.length) {
+    renderCaptions(state.captionLog);
+    return;
+  }
   const sentences = state.sentenceEntries || [];
   if (sentences.length) {
     renderSentences(sentences);
     return;
   }
-  renderCaptions(state.captionLog || []);
+  renderCaptions([]);
 }
 
-function latestVideoState(byVideo) {
-  return Object.values(byVideo).sort((left, right) => {
-    return (right.updatedAt || 0) - (left.updatedAt || 0);
-  })[0] || {};
+function renderDebug() {
+  const details = document.createElement("pre");
+  details.className = "debug";
+  details.textContent = [
+    `storedKeys=${JSON.stringify(debugInfo.storedKeys || [])}`,
+    `activeVideoId=${debugInfo.activeVideoId || ""}`,
+    `selectedKey=${debugInfo.selectedKey || ""}`,
+    `sentences=${debugInfo.selectedSentenceCount || 0}`,
+    `captions=${debugInfo.selectedCaptionCount || 0}`,
+  ].join("\n");
+  captions.append(details);
+}
+
+function stateToRender(byVideo) {
+  if (byVideo[activeVideoId]) return { key: activeVideoId, state: byVideo[activeVideoId] };
+  const latest = Object.entries(byVideo).sort((left, right) => {
+    return (right[1].updatedAt || 0) - (left[1].updatedAt || 0);
+  })[0];
+  return latest ? { key: latest[0], state: latest[1] } : { key: "", state: {} };
 }
 
 async function refreshActiveVideo() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const saved = await chrome.storage.local.get([BY_VIDEO_KEY, ACTIVE_VIDEO_KEY]);
-  activeVideoId = saved[ACTIVE_VIDEO_KEY] || getVideoId(tab?.url || "");
+  const tabVideoId = getVideoId(tab?.url || "");
+  activeVideoId = tabVideoId || saved[ACTIVE_VIDEO_KEY] || "";
+  debugInfo = {
+    storedKeys: Object.keys(saved[BY_VIDEO_KEY] || {}),
+    tabVideoId,
+    storedActiveVideoId: saved[ACTIVE_VIDEO_KEY] || "",
+    activeVideoId,
+  };
+  console.log("[ContextBubble SidePanel:init]", debugInfo);
   renderSaved(saved);
 }
 
@@ -104,7 +143,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     chrome.storage.local.get(BY_VIDEO_KEY, renderSaved);
   }
   if (changes[ACTIVE_VIDEO_KEY]) {
-    activeVideoId = changes[ACTIVE_VIDEO_KEY].newValue || "";
-    chrome.storage.local.get(BY_VIDEO_KEY, renderSaved);
+    refreshActiveVideo();
   }
 });
