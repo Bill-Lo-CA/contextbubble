@@ -1,61 +1,27 @@
-# Version-control and local tooling metadata
-.git
-.github
-.gitignore
-.gitattributes
-.codebase-memory
-.codebase-memory/**
-**/.codebase-memory
-**/.codebase-memory/**
-.codex
-.agents
-skills-lock.json
+# Default-deny the build context, then admit only image inputs.
+*
+!Dockerfile
+!requirements.txt
+!backend/
+!backend/**
+!docker/
+!docker/**
 
-# Local secrets and environment files
-.env
-.env*
-*.env
-**/.env
-**/.env*
-**/*.env
-*.secret
-*.secrets
-*.token
-*.key
-*.pem
-**/*.secret
-**/*.secrets
-**/*.token
-**/*.key
-**/*.pem
-
-# Python environments, caches, and test output
-.venv
-venv
-env
-ENV
+# Never admit tests, runtime state, caches, media, or secrets from allowed trees.
+backend/tests
+backend/tests/**
+backend/.contextbubble
+backend/.contextbubble/**
+backend/media
+backend/media/**
+backend/tmp
+backend/tmp/**
+backend/temp
+backend/temp/**
 **/__pycache__
 **/*.py[cod]
-.pytest_cache
-.mypy_cache
-.ruff_cache
-.coverage
-htmlcov
-
-# Runtime state, databases, logs, and downloaded media
-backend/.contextbubble
-backend/media
-backend/tmp
-backend/temp
-**/*.sqlite
-**/*.sqlite3
-**/*.db
-**/*.sqlite-wal
-**/*.sqlite-shm
-**/*.sqlite3-wal
-**/*.sqlite3-shm
-**/*.db-wal
-**/*.db-shm
+**/*.sqlite*
+**/*.db*
 **/*.log
 **/*.wav
 **/*.mp3
@@ -68,25 +34,16 @@ backend/temp
 **/*.webm
 **/*.part
 **/*.ytdl
+.env
+**/.env
+**/.env*
+**/.env.*
+**/*.env
+**/*.secret
+**/*.secrets
+**/*.token
+**/*.key
+**/*.pem
 
-# Specifications, documentation, and extension/Node artifacts
-contextbubble-spec
-docs
-extension
-node_modules
-**/node_modules
-dist
-build
-coverage
-**/*.crx
-**/*.zip
-
-# Editor, browser, and OS artifacts
-.vscode
-.idea
-.DS_Store
-Thumbs.db
-desktop.ini
-chrome-profile
-chrome-user-data
-**/*.har
+# Explicit exclusions retained as security documentation and contract anchors.
+.git

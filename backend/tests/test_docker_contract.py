@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
+REQUIREMENTS = ROOT / "requirements.txt"
 
 
 class DockerImageContractTest(unittest.TestCase):
@@ -31,13 +32,76 @@ class DockerImageContractTest(unittest.TestCase):
         ):
             self.assertIn(option, dockerfile)
 
+    def test_dockerfile_disables_native_cpu_tuning_with_portable_architectures(self):
+        dockerfile = DOCKERFILE.read_text()
+
+        self.assertIn("-DGGML_NATIVE=OFF", dockerfile)
+        self.assertIn('arch="$(dpkg --print-architecture)"', dockerfile)
+        self.assertIn("-DGGML_CPU_ARM_ARCH=armv8-a", dockerfile)
+        for option in (
+            "-DGGML_SSE42=OFF",
+            "-DGGML_AVX=OFF",
+            "-DGGML_AVX2=OFF",
+            "-DGGML_BMI2=OFF",
+            "-DGGML_FMA=OFF",
+            "-DGGML_F16C=OFF",
+        ):
+            self.assertIn(option, dockerfile)
+        self.assertIn("x86-64 baseline", dockerfile)
+
+    def test_dockerfile_installs_pinned_full_youtube_runtime(self):
+        dockerfile = DOCKERFILE.read_text()
+
+        self.assertIn(
+            '"yt-dlp[default,deno,pin,pin-deno]==${YT_DLP_VERSION}"',
+            dockerfile,
+        )
+
+    def test_application_dependencies_are_pinned(self):
+        requirements = REQUIREMENTS.read_text().splitlines()
+
+        self.assertIn("fastapi==0.139.0", requirements)
+        self.assertIn("uvicorn==0.50.0", requirements)
+
+    def test_base_tags_are_documented_as_patch_updateable(self):
+        dockerfile = DOCKERFILE.read_text()
+
+        self.assertIn("intentionally patch-updatable", dockerfile)
+        self.assertIn("byte-identical rebuilds are out of scope", dockerfile)
+
     def test_dockerfile_defines_app_user_and_entrypoint(self):
         self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
         dockerfile = DOCKERFILE.read_text()
 
         self.assertIn("groupadd --gid 10001 contextbubble", dockerfile)
         self.assertIn("useradd --uid 10001 --gid contextbubble", dockerfile)
+        self.assertIn("--create-home", dockerfile)
+        self.assertIn("--home-dir /home/contextbubble", dockerfile)
+        self.assertIn("HOME=/home/contextbubble", dockerfile)
         self.assertIn('ENTRYPOINT ["/usr/local/bin/contextbubble-entrypoint"]', dockerfile)
+
+    def test_dockerfile_copies_application_and_executables_to_runtime_paths(self):
+        dockerfile = DOCKERFILE.read_text()
+
+        requirements_copy = dockerfile.index("COPY requirements.txt ./requirements.txt")
+        requirements_install = dockerfile.index(
+            "RUN python -m pip install --no-cache-dir --requirement requirements.txt"
+        )
+        backend_copy = dockerfile.index("COPY backend ./backend")
+        self.assertLess(requirements_copy, requirements_install)
+        self.assertLess(requirements_install, backend_copy)
+        self.assertIn(
+            "COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli",
+            dockerfile,
+        )
+        self.assertIn(
+            "COPY docker/bootstrap-model.sh /usr/local/bin/contextbubble-bootstrap-model",
+            dockerfile,
+        )
+        self.assertIn(
+            "COPY docker/entrypoint.sh /usr/local/bin/contextbubble-entrypoint",
+            dockerfile,
+        )
 
     def test_dockerignore_excludes_local_secrets_state_and_git(self):
         self.assertTrue(DOCKERIGNORE.is_file(), ".dockerignore must exist")
@@ -45,6 +109,30 @@ class DockerImageContractTest(unittest.TestCase):
 
         for exclusion in (".env", "backend/.contextbubble", ".git"):
             self.assertIn(exclusion, exclusions)
+
+    def test_dockerignore_default_denies_then_allows_only_image_inputs(self):
+        lines = [
+            line
+            for line in DOCKERIGNORE.read_text().splitlines()
+            if line and not line.startswith("#")
+        ]
+
+        self.assertEqual(lines[0], "*")
+        expected_inclusions = {
+            "!Dockerfile",
+            "!requirements.txt",
+            "!backend/",
+            "!backend/**",
+            "!docker/",
+            "!docker/**",
+        }
+        self.assertEqual(
+            {line for line in lines if line.startswith("!")},
+            expected_inclusions,
+        )
+        self.assertIn("backend/tests", lines)
+        self.assertIn("**/.env*", lines)
+        self.assertNotIn("!.env", lines)
 
 
 class DockerEntrypointContractTest(unittest.TestCase):

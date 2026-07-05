@@ -1,3 +1,4 @@
+# Debian and Python base tags are intentionally patch-updatable; byte-identical rebuilds are out of scope.
 FROM debian:bookworm-slim AS whisper-builder
 
 ARG WHISPER_CPP_REF=v1.8.6
@@ -10,16 +11,31 @@ RUN apt-get update \
         git \
     && rm -rf /var/lib/apt/lists/*
 
+# amd64 targets the portable x86-64 baseline (SSE2) instead of build-host ISA extensions.
 RUN git clone --branch "${WHISPER_CPP_REF}" --depth 1 \
         https://github.com/ggml-org/whisper.cpp.git /src/whisper.cpp \
+    && arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+        arm64) set -- "-DGGML_CPU_ARM_ARCH=armv8-a" ;; \
+        amd64) set -- \
+            "-DGGML_SSE42=OFF" \
+            "-DGGML_AVX=OFF" \
+            "-DGGML_AVX2=OFF" \
+            "-DGGML_BMI2=OFF" \
+            "-DGGML_FMA=OFF" \
+            "-DGGML_F16C=OFF" ;; \
+        *) echo "unsupported build architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
     && cmake -S /src/whisper.cpp -B /src/whisper.cpp/build \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_NATIVE=OFF \
         -DGGML_CUDA=OFF \
         -DGGML_VULKAN=OFF \
         -DGGML_METAL=OFF \
         -DWHISPER_BUILD_TESTS=OFF \
         -DWHISPER_BUILD_SERVER=OFF \
+        "$@" \
     && cmake --build /src/whisper.cpp/build --config Release \
         --target whisper-cli --parallel
 
@@ -36,7 +52,8 @@ RUN apt-get update \
         gosu \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir "yt-dlp==${YT_DLP_VERSION}"
+    && python -m pip install --no-cache-dir \
+        "yt-dlp[default,deno,pin,pin-deno]==${YT_DLP_VERSION}"
 
 WORKDIR /app
 
@@ -49,7 +66,8 @@ COPY docker/bootstrap-model.sh /usr/local/bin/contextbubble-bootstrap-model
 COPY docker/entrypoint.sh /usr/local/bin/contextbubble-entrypoint
 
 RUN groupadd --gid 10001 contextbubble \
-    && useradd --uid 10001 --gid contextbubble --no-create-home \
+    && useradd --uid 10001 --gid contextbubble --create-home \
+        --home-dir /home/contextbubble \
         --shell /usr/sbin/nologin contextbubble \
     && install -d -o contextbubble -g contextbubble -m 0750 \
         /data /data/media /models /tmp/contextbubble \
@@ -59,6 +77,7 @@ RUN groupadd --gid 10001 contextbubble \
         /usr/local/bin/contextbubble-entrypoint
 
 ENV PYTHONUNBUFFERED=1 \
+    HOME=/home/contextbubble \
     TMPDIR=/tmp/contextbubble
 
 EXPOSE 8000
