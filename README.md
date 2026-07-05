@@ -35,6 +35,8 @@ GEMINI_MODEL="gemini-2.5-flash"
 OLLAMA_BASE_URL="http://127.0.0.1:11434"
 OLLAMA_MODEL="qwen3:8b"
 AGENT_MODE="heuristic"
+TRANSLATION_MODE="ollama"
+TRANSLATION_MODEL="qwen3:8b"
 DEMO_VIDEO_IDS=""
 ```
 
@@ -43,9 +45,51 @@ when your tools live elsewhere. By default, whisper.cpp is allowed to use GPU
 when the binary was built with GPU support. Set `WHISPER_NO_GPU=1` to force CPU
 mode. Agent analysis defaults to the local heuristic mode for testing. Set
 `AGENT_MODE=gemini` and provide `GEMINI_API_KEY` to use Gemini, or set
-`AGENT_MODE=ollama` to use a local Ollama model. Demo fixtures are only used
-when Demo mode is checked in the popup or when the current video ID is listed in
-`DEMO_VIDEO_IDS`.
+`AGENT_MODE=ollama` to use a local Ollama model. Translation is configured
+separately and defaults to local Ollama with `qwen3:8b`, so the bubble workflow
+can stay deterministic while English-to-Traditional-Chinese translation uses a
+real multilingual model. Demo fixtures are only used when Demo mode is checked
+in the popup or when the current video ID is listed in `DEMO_VIDEO_IDS`.
+
+## Repeatable Final-Project Demo
+
+Use this path for recording when live YouTube captions, ASR speed, or model
+availability should not decide whether the demo works.
+
+Selected demo video:
+
+```text
+https://www.youtube.com/watch?v=fNk_zzaMoSs
+```
+
+The matching stable transcript fixture is:
+
+```text
+backend/fixtures/fNk_zzaMoSs.vtt
+```
+
+Run the backend in local deterministic mode:
+
+```sh
+AGENT_MODE=heuristic TRANSLATION_MODE=ollama TRANSLATION_MODEL=qwen3:8b python backend/server.py
+```
+
+Then load the extension, pair with the printed code, open the selected YouTube
+URL, enable **Demo mode**, pick a learner level, and click **Analyze Video**.
+Demo mode uses the bundled transcript fixture for that video and still runs the
+normal preparation, Concept Agent, Reviewer Agent, validator, cache, bubbles,
+and Side Panel path.
+
+For a Gemini-backed recording, use the same fixture path but start the backend
+with:
+
+```sh
+AGENT_MODE=gemini GEMINI_API_KEY="..." python backend/server.py
+```
+
+The fixture keeps the recorded demo independent from live caption availability,
+`yt-dlp`, and whisper.cpp runtime. Live caption retrieval and ASR fallback remain
+available when Demo mode is off.
 
 ## Install Tools
 
@@ -153,7 +197,8 @@ must still know a valid token for protected routes.
 - The extension stores only a paired session token in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
 - Transcript, caption, and popup status state is scoped by YouTube video in extension local storage.
 - External-tool failures are logged to `backend/.contextbubble/jobs.log` with bounded stderr tails.
-- The agent workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini or `AGENT_MODE=ollama` to use Ollama.
+- The bubble workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini or `AGENT_MODE=ollama` to use Ollama.
+- Translation defaults to `TRANSLATION_MODE=ollama` with `TRANSLATION_MODEL=qwen3:8b`.
 - The Side Panel shows prepared sentence cards after analysis is ready and falls back to live caption debug text before then.
 - The extension does not download media directly; backend `yt-dlp` does.
 - YouTube download behavior depends on `yt-dlp` staying current.

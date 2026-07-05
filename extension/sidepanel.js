@@ -23,9 +23,8 @@ function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
-function renderSentences(entries = []) {
+function renderSentences(entries = [], { autoScroll = false } = {}) {
   captions.textContent = "";
-  renderDebug();
   if (!entries.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
@@ -71,10 +70,11 @@ function renderSentences(entries = []) {
     }
     captions.append(item);
   }
-  scrollTo(0, document.body.scrollHeight);
+  if (autoScroll) scrollTo(0, document.body.scrollHeight);
 }
 
 function renderCaptions(log = []) {
+  const autoScroll = window.scrollY + window.innerHeight >= document.body.scrollHeight - 40;
   renderSentences(log.map((entry, index) => ({
     id: `caption-${index}`,
     start_seconds: 0,
@@ -85,7 +85,7 @@ function renderCaptions(log = []) {
     translation_status: entry.translation_status || "",
     timeText: entry.timeText || "",
     source_segment_ids: [],
-  })));
+  })), { autoScroll });
 }
 
 function renderSaved(saved) {
@@ -101,29 +101,16 @@ function renderSaved(saved) {
     selectedCaptionCount: state.captionLog?.length || 0,
   };
   console.log("[ContextBubble SidePanel]", debugInfo);
-  if (state.captionLog?.length) {
-    renderCaptions(state.captionLog);
-    return;
-  }
   const sentences = state.sentenceEntries || [];
   if (sentences.length) {
     renderSentences(sentences);
     return;
   }
+  if (state.captionLog?.length) {
+    renderCaptions(state.captionLog);
+    return;
+  }
   renderCaptions([]);
-}
-
-function renderDebug() {
-  const details = document.createElement("pre");
-  details.className = "debug";
-  details.textContent = [
-    `storedKeys=${JSON.stringify(debugInfo.storedKeys || [])}`,
-    `activeVideoId=${debugInfo.activeVideoId || ""}`,
-    `selectedKey=${debugInfo.selectedKey || ""}`,
-    `sentences=${debugInfo.selectedSentenceCount || 0}`,
-    `captions=${debugInfo.selectedCaptionCount || 0}`,
-  ].join("\n");
-  captions.append(details);
 }
 
 function stateToRender(byVideo) {

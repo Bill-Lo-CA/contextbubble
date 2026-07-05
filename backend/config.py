@@ -27,9 +27,16 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 AGENT_MODE = os.environ.get("AGENT_MODE", "heuristic").lower()
+TRANSLATION_MODE = os.environ.get("TRANSLATION_MODE", "ollama").lower()
+TRANSLATION_MODEL = os.environ.get("TRANSLATION_MODEL", "qwen3:8b")
 DEMO_VIDEO_IDS = {item.strip() for item in os.environ.get("DEMO_VIDEO_IDS", "").split(",") if item.strip()}
+DEMO_FIXTURES = {
+    "fNk_zzaMoSs": "fNk_zzaMoSs.vtt",
+}
 LEARNER_LEVELS = {"beginner", "intermediate", "advanced"}
 AGENT_MODES = {"heuristic", "gemini", "ollama"}
+TRANSLATION_MODES = {"gemini", "ollama"}
+TRANSLATION_PROMPT_VERSION = "translation-v2"
 DEFAULT_CHUNK_SECONDS = 30
 CHUNK_OVERLAP_SECONDS = 2
 MAX_SUBTITLE_BYTES = 5 * 1024 * 1024
@@ -57,6 +64,8 @@ def iso_from_timestamp(timestamp):
 def validate_config():
     if AGENT_MODE not in AGENT_MODES:
         raise ValueError(f"AGENT_MODE must be one of: {', '.join(sorted(AGENT_MODES))}")
+    if TRANSLATION_MODE not in TRANSLATION_MODES:
+        raise ValueError(f"TRANSLATION_MODE must be one of: {', '.join(sorted(TRANSLATION_MODES))}")
 def validate_runtime_for_asr():
     if not shutil.which(YTDLP_CMD) and not Path(YTDLP_CMD).exists():
         raise FileNotFoundError("YTDLP_AUDIO_FAILED")
@@ -71,3 +80,5 @@ def validate_runtime_for_asr():
 def validate_video_id(video_id):
     if not re.fullmatch(r"[-_A-Za-z0-9]{6,20}", video_id):
         raise ValueError("invalid YouTube video id")
+def demo_fixture_path(video_id):
+    return Path(__file__).resolve().parent / "fixtures" / DEMO_FIXTURES.get(video_id, "demo.vtt")

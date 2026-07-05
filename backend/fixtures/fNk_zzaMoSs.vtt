@@ -1,0 +1,19 @@
+WEBVTT
+
+00:00:05.000 --> 00:00:10.000
+When we build a question answering assistant, we first need a transcript that is split into reliable timestamped segments.
+
+00:00:42.000 --> 00:00:48.000
+The next step is creating embeddings, which are numeric representations that let the system compare the meaning of different pieces of text.
+
+00:01:18.000 --> 00:01:24.000
+After the embeddings are stored, a vector database can search for the transcript segments that are closest to the viewer's question.
+
+00:01:56.000 --> 00:02:03.000
+Cosine similarity is a common way to compare vectors because it focuses on whether two vectors point in a similar direction.
+
+00:02:35.000 --> 00:02:42.000
+Retrieval augmented generation combines search with generation: the model first retrieves relevant context, then writes an answer using that evidence.
+
+00:03:14.000 --> 00:03:21.000
+The reviewer stage checks whether each explanation is grounded in the transcript, fits the learner level, and appears at a useful timestamp.

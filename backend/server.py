@@ -4,7 +4,7 @@ import sys
 import tempfile
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, iso_from_timestamp, set_data_dir, validate_config, validate_video_id
+from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_video_id
 
 
 if "--check" in sys.argv:
@@ -54,10 +54,12 @@ def authorized(authorization=""):
 
 
 async def request_json(request, limit):
-    length = int(request.headers.get("content-length", "0"))
-    if length > limit:
+    length = request.headers.get("content-length")
+    if length is not None and int(length) > limit:
         raise ValueError("request body too large")
     body = await request.body()
+    if len(body) > limit:
+        raise ValueError("request body too large")
     return json.loads(body or b"{}")
 
 
@@ -185,7 +187,7 @@ async def demo_transcript(request: Request, authorization: str = Header("")):
         return json_response({"error": str(exc), "error_code": "BAD_REQUEST"}, 400)
     if not demo_mode and video_id not in DEMO_VIDEO_IDS:
         return json_response({"error": "demo transcript is not allowed for this video", "error_code": "DEMO_NOT_ALLOWED"}, 403)
-    fixture = Path(__file__).resolve().parent / "fixtures/demo.vtt"
+    fixture = demo_fixture_path(video_id)
     with open(fixture, encoding="utf-8") as file:
         transcript = store_transcript(video_id, fixture.name, file.read(), "demo")
     return json_response({**transcript, "segments": load_transcript(transcript["transcript_id"])["segments"]})
@@ -233,6 +235,7 @@ async def translations(request: Request, authorization: str = Header("")):
             body.get("context_before", ""),
             body.get("context_after", ""),
             body.get("target_language", "zh-TW"),
+            bool(body.get("force_refresh")),
         )
         return ok(result)
     except AgentProviderError as exc:
@@ -282,6 +285,8 @@ async def health(authorization: str = Header("")):
         "api_version": API_VERSION,
         "agent_mode": AGENT_MODE,
         "gemini_model": GEMINI_MODEL if AGENT_MODE == "gemini" else None,
+        "translation_mode": TRANSLATION_MODE,
+        "translation_model": TRANSLATION_MODEL if TRANSLATION_MODE == "ollama" else GEMINI_MODEL,
     })
 
 
@@ -349,7 +354,6 @@ def main():
     init_db()
     resume_preparations()
     print("ContextBubble backend on http://127.0.0.1:8000")
-    print(f"ContextBubble API token: {auth.API_TOKEN}")
     print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
     uvicorn.run(app, host="127.0.0.1", port=8000)
 

@@ -132,10 +132,50 @@
     }
   }
 
+  async function requestSentenceTranslation(entry) {
+    if (translationRequests.has(entry.id) || !authToken) return;
+    translationRequests.add(entry.id);
+    await updateSentenceTranslation(getVideoId(), {
+      id: entry.id,
+      status: "pending",
+      translated_text: "",
+      reason: "",
+    });
+    try {
+      const result = await fetchJson("/api/translations", {
+        method: "POST",
+        body: JSON.stringify({
+          id: entry.id,
+          source_text: entry.text,
+          context_before: nearbySentenceText(entry.start_seconds, -1),
+          context_after: nearbySentenceText(entry.end_seconds, 1),
+          target_language: "zh-TW",
+        }),
+      });
+      await updateSentenceTranslation(getVideoId(), result);
+    } catch (error) {
+      await updateSentenceTranslation(getVideoId(), {
+        id: entry.id,
+        status: "failed",
+        translated_text: "",
+        reason: error.message,
+      });
+    }
+  }
+
   function nearbyText(seconds, direction) {
     const sorted = [...transcriptSegments].sort((left, right) => left.start_seconds - right.start_seconds);
     const index = sorted.findIndex((segment) => {
       return seconds >= segment.start_seconds && seconds <= segment.end_seconds;
+    });
+    const neighbor = sorted[index + direction];
+    return neighbor?.text || "";
+  }
+
+  function nearbySentenceText(seconds, direction) {
+    const sorted = [...sentenceEntries].sort((left, right) => left.start_seconds - right.start_seconds);
+    const index = sorted.findIndex((entry) => {
+      return seconds >= entry.start_seconds && seconds <= entry.end_seconds;
     });
     const neighbor = sorted[index + direction];
     return neighbor?.text || "";
@@ -149,6 +189,18 @@
       entry.translated_text = normalizeText(result.translated_text);
       entry.translation_status = result.status || "translated";
       entry.translation_reason = result.reason || "";
+    });
+  }
+
+  function updateSentenceTranslation(videoId, result) {
+    return updateVideoState(videoId, (state) => {
+      const entries = state.sentenceEntries || [];
+      const entry = entries.find((item) => item.id === result.id);
+      if (!entry) return;
+      entry.translated_text = normalizeText(result.translated_text);
+      entry.translation_status = result.status || "translated";
+      entry.translation_reason = result.reason || "";
+      sentenceEntries = entries;
     });
   }
 
@@ -290,7 +342,8 @@
         lastUpdated = job.updated_at;
         lastMove = Date.now();
       }
-      if (Date.now() - lastMove > 10 * 60 * 1000) {
+      const stallTimeout = job.stage === "transcribing" ? 45 * 60 * 1000 : 10 * 60 * 1000;
+      if (Date.now() - lastMove > stallTimeout) {
         throw new Error("Preparation stalled.");
       }
     }
@@ -396,11 +449,18 @@
     }
     lastVideoTime = currentVideo.currentTime;
 
+    const activeSentence = sentenceEntries.find((entry) => {
+      return currentVideo.currentTime >= entry.start_seconds && currentVideo.currentTime <= entry.end_seconds;
+    });
+    if (activeSentence) requestSentenceTranslation(activeSentence);
+
     const visibleCaptionText = readCaptionText();
     const activeSegment = transcriptSegments.find((segment) => {
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
-    appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
+    if (!sentenceEntries.length) {
+      appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
+    }
 
     for (const bubble of bubbles) {
       const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;

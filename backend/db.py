@@ -116,6 +116,23 @@ def init_db():
                 review_reason text,
                 primary key (analysis_id, bubble_id)
             );
+            create table if not exists translation_cache (
+                cache_key text primary key,
+                segment_id text not null,
+                source_hash text not null,
+                context_hash text not null,
+                target_language text not null,
+                provider text not null,
+                model text not null,
+                prompt_version text not null,
+                translated_text text,
+                confidence real,
+                status text not null,
+                decision text not null,
+                reason text,
+                created_at text not null,
+                updated_at text not null
+            );
             create table if not exists schema_migrations (
                 name text primary key,
                 applied_at text not null
@@ -133,6 +150,8 @@ def init_db():
                 on asr_chunks(job_id, status);
             create index if not exists idx_preparation_events_job
                 on preparation_events(job_id, created_at);
+            create index if not exists idx_translation_cache_lookup
+                on translation_cache(segment_id, target_language, provider, model, prompt_version);
         """)
         conn.execute(
             "insert or ignore into schema_migrations values (?, ?)",

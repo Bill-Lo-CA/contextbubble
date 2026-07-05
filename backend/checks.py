@@ -104,6 +104,8 @@ def self_check_media_helpers():
     except RuntimeError:
         pass
     assert "ollama" in AGENT_MODES
+    assert TRANSLATION_MODE == "ollama"
+    assert TRANSLATION_MODEL == "qwen3:8b"
 
 
 def self_check_sentence_qc():
@@ -204,6 +206,35 @@ def self_check_security_helpers():
         pass
 
 
+def self_check_translation_decisions():
+    skipped = translate_segment("segment-empty", "", "", "", "zh-TW")
+    assert skipped["status"] == "skipped"
+    assert skipped["decision"] == "skip"
+    decision = translation_decision("segment-001", "hello world", "", "", "zh-TW")
+    result = {
+        "translated_text": "哈囉世界",
+        "confidence": 0.91,
+        "status": "translated",
+        "decision": "translate",
+        "reason": "",
+    }
+    save_translation_cache(
+        decision["cache_key"],
+        "segment-001",
+        decision["source_hash"],
+        decision["context_hash"],
+        "zh-TW",
+        decision["provider"],
+        decision["model"],
+        result,
+    )
+    cached = translate_segment("segment-001", "hello world", "", "", "zh-TW")
+    assert cached["decision"] == "use_cache"
+    assert cached["translated_text"] == "哈囉世界"
+    assert translation_decision("segment-001", "hello world changed", "", "", "zh-TW")["decision"] == "retranslate"
+    assert translation_decision("segment-001", "hello world", "", "", "zh-TW", True)["decision"] == "retranslate"
+
+
 def self_check():
     validate_config()
     init_db()
@@ -213,3 +244,4 @@ def self_check():
     self_check_sentence_qc()
     self_check_analysis_and_storage()
     self_check_security_helpers()
+    self_check_translation_decisions()

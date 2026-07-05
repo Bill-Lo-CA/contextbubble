@@ -237,7 +237,7 @@ def run_preparation_job(job_id):
 def fallback_transcript_for_missing_captions(job_id, video_id, source_policy):
     if source_policy == "demo" or video_id in DEMO_VIDEO_IDS:
         update_job(job_id, stage="loading_demo", progress=0.1)
-        fixture = Path(__file__).resolve().parent / "fixtures/demo.vtt"
+        fixture = demo_fixture_path(video_id)
         with open(fixture, encoding="utf-8") as file:
             content = file.read()
         transcript = store_transcript(video_id, fixture.name, content, "demo")
@@ -303,6 +303,8 @@ def run_whole_video_asr(job_id, video_id):
             if row and row["status"] == "completed":
                 continue
             mark_asr_chunk_processing(job_id, chunk["chunk_index"])
+            update_job(job_id, stage="transcribing", progress=0.2 + 0.55 * (completed / max(1, len(chunks))))
+            add_preparation_event(job_id, "chunk_started", "transcribing", {"chunk_index": chunk["chunk_index"]})
             try:
                 segments = transcribe_audio_chunk(normalized_audio, chunk, str(job_media_dir), job_id)
             except ExternalCommandError as error:
