@@ -22,6 +22,14 @@ FFPROBE_CMD = os.environ.get("FFPROBE_CMD", "ffprobe")
 WHISPER_CMD = os.environ.get("WHISPER_CMD", str(HOME / "tools/whisper.cpp/build/bin/whisper-cli"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/models/ggml-base.en.bin"))
 WHISPER_NO_GPU = os.environ.get("WHISPER_NO_GPU", "").lower() in ("1", "true", "yes")
+WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "en").strip() or "en"
+BACKEND_HOST = os.environ.get("CONTEXTBUBBLE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+try:
+    BACKEND_PORT = int(os.environ.get("CONTEXTBUBBLE_PORT", "8000"))
+except ValueError as error:
+    raise ValueError("CONTEXTBUBBLE_PORT must be an integer") from error
+if not 1 <= BACKEND_PORT <= 65535:
+    raise ValueError("CONTEXTBUBBLE_PORT must be between 1 and 65535")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
