@@ -6,7 +6,7 @@ set -eu
 : "${WHISPER_MODEL_SHA256:?WHISPER_MODEL_SHA256 is required}"
 
 case "$WHISPER_MODEL" in
-    /models/*|*/models/*) ;;
+    /models/*|/*/models/*) ;;
     *)
         echo "error: WHISPER_MODEL must be inside a models directory" >&2
         exit 1

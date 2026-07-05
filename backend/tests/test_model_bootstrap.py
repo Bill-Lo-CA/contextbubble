@@ -20,11 +20,11 @@ class ModelBootstrapTest(unittest.TestCase):
         self.target = self.root / "models" / "model.bin"
         self.checksum = hashlib.sha256(self.source.read_bytes()).hexdigest()
 
-    def run_bootstrap(self, checksum=None):
+    def run_bootstrap(self, checksum=None, target=None, cwd=None):
         env = os.environ.copy()
         env.update(
             {
-                "WHISPER_MODEL": str(self.target),
+                "WHISPER_MODEL": str(target or self.target),
                 "WHISPER_MODEL_URL": self.source.as_uri(),
                 "WHISPER_MODEL_SHA256": checksum or self.checksum,
             }
@@ -35,6 +35,7 @@ class ModelBootstrapTest(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            cwd=cwd,
         )
 
     def test_downloads_valid_model_atomically(self):
@@ -62,6 +63,14 @@ class ModelBootstrapTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.target.exists())
         self.assertEqual(list(self.target.parent.glob("*.partial.*")), [])
+
+    def test_relative_models_target_is_rejected(self):
+        relative_target = Path("tmp/models/model.bin")
+
+        result = self.run_bootstrap(target=relative_target, cwd=self.root)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / relative_target).exists())
 
 
 if __name__ == "__main__":
