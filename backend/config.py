@@ -22,6 +22,9 @@ FFPROBE_CMD = os.environ.get("FFPROBE_CMD", "ffprobe")
 WHISPER_CMD = os.environ.get("WHISPER_CMD", str(HOME / "tools/whisper.cpp/build/bin/whisper-cli"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/models/ggml-base.en.bin"))
 WHISPER_NO_GPU = os.environ.get("WHISPER_NO_GPU", "").lower() in ("1", "true", "yes")
+VALIDATE_ASR_ON_START = os.environ.get(
+    "CONTEXTBUBBLE_VALIDATE_ASR_ON_START", ""
+).lower() in ("1", "true", "yes")
 WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "en").strip() or "en"
 BACKEND_HOST = os.environ.get("CONTEXTBUBBLE_HOST", "127.0.0.1").strip() or "127.0.0.1"
 try:

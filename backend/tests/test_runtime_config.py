@@ -60,6 +60,19 @@ class RuntimeConfigTests(unittest.TestCase):
 
         self.assertEqual(config.BACKEND_HOST, "127.0.0.1")
         self.assertEqual(config.BACKEND_PORT, 8000)
+        self.assertFalse(config.VALIDATE_ASR_ON_START)
+
+    def test_startup_asr_validation_accepts_documented_true_values(self):
+        for value in ("1", "true", "TRUE", "yes", "YES"):
+            with self.subTest(value=value):
+                with mock.patch.dict(
+                    os.environ,
+                    {"CONTEXTBUBBLE_VALIDATE_ASR_ON_START": value},
+                    clear=True,
+                ):
+                    config = load_config()
+
+                self.assertTrue(config.VALIDATE_ASR_ON_START)
 
     def test_backend_bind_environment_overrides(self):
         environment = {
@@ -121,6 +134,7 @@ class RuntimeConfigTests(unittest.TestCase):
                     mock.patch.object(server, "validate_config"),
                     mock.patch.object(server, "init_db"),
                     mock.patch.object(server.auth, "initialize_auth"),
+                    mock.patch.object(server, "validate_runtime_for_asr") as validate_asr,
                     mock.patch.object(server, "resume_preparations"),
                     mock.patch("builtins.print"),
                 ):
@@ -131,6 +145,67 @@ class RuntimeConfigTests(unittest.TestCase):
                     host="0.0.0.0",
                     port=9000,
                 )
+                validate_asr.assert_not_called()
+        finally:
+            sys.modules.pop("server", None)
+
+    def test_server_main_validates_asr_before_resume_and_uvicorn_when_enabled(self):
+        sys.modules.pop("server", None)
+        events = []
+        modules = server_dependency_modules()
+        modules["uvicorn"].run.side_effect = lambda *args, **kwargs: events.append("uvicorn")
+        try:
+            with mock.patch.dict(sys.modules, modules):
+                import server
+
+                with (
+                    mock.patch.object(server, "VALIDATE_ASR_ON_START", True),
+                    mock.patch.object(server, "validate_config"),
+                    mock.patch.object(server, "init_db"),
+                    mock.patch.object(server.auth, "initialize_auth"),
+                    mock.patch.object(
+                        server,
+                        "validate_runtime_for_asr",
+                        side_effect=lambda: events.append("validate"),
+                    ),
+                    mock.patch.object(
+                        server,
+                        "resume_preparations",
+                        side_effect=lambda: events.append("resume"),
+                    ),
+                    mock.patch("builtins.print"),
+                ):
+                    server.main()
+
+            self.assertEqual(events, ["validate", "resume", "uvicorn"])
+        finally:
+            sys.modules.pop("server", None)
+
+    def test_server_main_validation_failure_prevents_resume_and_uvicorn(self):
+        sys.modules.pop("server", None)
+        modules = server_dependency_modules()
+        try:
+            with mock.patch.dict(sys.modules, modules):
+                import server
+
+                with (
+                    mock.patch.object(server, "VALIDATE_ASR_ON_START", True),
+                    mock.patch.object(server, "validate_config"),
+                    mock.patch.object(server, "init_db"),
+                    mock.patch.object(server.auth, "initialize_auth"),
+                    mock.patch.object(
+                        server,
+                        "validate_runtime_for_asr",
+                        side_effect=FileNotFoundError("WHISPER_NOT_FOUND"),
+                    ),
+                    mock.patch.object(server, "resume_preparations") as resume,
+                    mock.patch("builtins.print"),
+                ):
+                    with self.assertRaisesRegex(FileNotFoundError, "WHISPER_NOT_FOUND"):
+                        server.main()
+
+            resume.assert_not_called()
+            modules["uvicorn"].run.assert_not_called()
         finally:
             sys.modules.pop("server", None)
 
