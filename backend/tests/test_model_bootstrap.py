@@ -1,8 +1,10 @@
 import hashlib
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -20,7 +22,7 @@ class ModelBootstrapTest(unittest.TestCase):
         self.target = self.root / "models" / "model.bin"
         self.checksum = hashlib.sha256(self.source.read_bytes()).hexdigest()
 
-    def run_bootstrap(self, checksum=None, target=None, cwd=None):
+    def run_bootstrap(self, checksum=None, target=None, cwd=None, command=(), env_extra=None):
         env = os.environ.copy()
         env.update(
             {
@@ -29,8 +31,9 @@ class ModelBootstrapTest(unittest.TestCase):
                 "WHISPER_MODEL_SHA256": checksum or self.checksum,
             }
         )
+        env.update(env_extra or {})
         return subprocess.run(
-            [str(BOOTSTRAP)],
+            [str(BOOTSTRAP), *command],
             env=env,
             text=True,
             capture_output=True,
@@ -64,6 +67,34 @@ class ModelBootstrapTest(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual(list(self.target.parent.glob("*.partial.*")), [])
 
+    def test_invalid_existing_model_is_safely_replaced(self):
+        self.target.parent.mkdir()
+        self.target.write_bytes(b"invalid model")
+
+        result = self.run_bootstrap()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.target.read_bytes(), self.source.read_bytes())
+        self.assertIn("downloaded", result.stdout)
+        self.assertEqual(list(self.target.parent.glob("*.partial.*")), [])
+
+    def test_successful_bootstrap_executes_backend_with_original_arguments(self):
+        arguments_file = self.root / "backend-arguments"
+        backend = self.root / "backend"
+        backend.write_text(
+            "#!/bin/sh\n"
+            'for argument in "$@"; do printf "%s\\n" "$argument"; done > "$TEST_ARGUMENTS_FILE"\n'
+        )
+        backend.chmod(0o755)
+
+        result = self.run_bootstrap(
+            command=(str(backend), "argument with spaces", "--flag"),
+            env_extra={"TEST_ARGUMENTS_FILE": str(arguments_file)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(arguments_file.read_text().splitlines(), ["argument with spaces", "--flag"])
+
     def test_relative_models_target_is_rejected(self):
         relative_target = Path("tmp/models/model.bin")
 
@@ -71,6 +102,67 @@ class ModelBootstrapTest(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / relative_target).exists())
+
+    def test_signal_during_download_cleans_partial_and_does_not_start_backend(self):
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        ready = self.root / "curl-ready"
+        backend_marker = self.root / "backend-ran"
+        curl = bin_dir / "curl"
+        curl.write_text(
+            "#!/bin/sh\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in\n"
+            "    --output) output=$2; shift 2 ;;\n"
+            "    *) shift ;;\n"
+            "  esac\n"
+            "done\n"
+            "printf partial > \"$output\"\n"
+            "printf ready > \"$TEST_CURL_READY\"\n"
+            "trap 'exit 143' TERM\n"
+            "trap 'exit 130' INT\n"
+            "trap 'exit 129' HUP\n"
+            "while :; do sleep 1; done\n"
+        )
+        curl.chmod(0o755)
+        backend = bin_dir / "backend"
+        backend.write_text("#!/bin/sh\nprintf ran > \"$TEST_BACKEND_MARKER\"\n")
+        backend.chmod(0o755)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{bin_dir}:{env['PATH']}",
+                "TEST_CURL_READY": str(ready),
+                "TEST_BACKEND_MARKER": str(backend_marker),
+                "WHISPER_MODEL": str(self.target),
+                "WHISPER_MODEL_URL": "https://example.invalid/model.bin",
+                "WHISPER_MODEL_SHA256": self.checksum,
+            }
+        )
+        process = subprocess.Popen(
+            [str(BOOTSTRAP), str(backend)],
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "curl stub did not start")
+
+            process.terminate()
+            returncode = process.wait(timeout=5)
+        except BaseException:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            raise
+
+        self.assertNotEqual(returncode, 0)
+        self.assertEqual(list(self.target.parent.glob("*.partial.*")), [])
+        self.assertFalse(self.target.exists())
+        self.assertFalse(backend_marker.exists())
 
 
 if __name__ == "__main__":
