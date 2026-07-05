@@ -4,7 +4,6 @@ services:
       context: .
       args:
         WHISPER_CPP_REF: "${WHISPER_CPP_REF:-v1.8.6}"
-        YT_DLP_VERSION: "${YT_DLP_VERSION:-2026.7.4}"
     image: contextbubble-backend:cpu
     restart: unless-stopped
     ports:
@@ -14,6 +13,7 @@ services:
       CONTEXTBUBBLE_HOST: "0.0.0.0"
       CONTEXTBUBBLE_PORT: "8000"
       CONTEXTBUBBLE_DATA_DIR: "/data"
+      CONTEXTBUBBLE_VALIDATE_ASR_ON_START: "1"
       YTDLP_CMD: "yt-dlp"
       FFMPEG_CMD: "ffmpeg"
       FFPROBE_CMD: "ffprobe"
@@ -22,6 +22,7 @@ services:
       WHISPER_MODEL_URL: "${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.en.bin}"
       WHISPER_MODEL_SHA256: "${WHISPER_MODEL_SHA256:-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002}"
       WHISPER_LANGUAGE: "${WHISPER_LANGUAGE:-en}"
+      # CPU-only invariant; do not make configurable in this Compose service.
       WHISPER_NO_GPU: "1"
       AGENT_MODE: "${AGENT_MODE:-heuristic}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"

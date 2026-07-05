@@ -103,6 +103,36 @@ class ModelBootstrapTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / relative_target).exists())
 
+    def test_models_directory_target_is_rejected_before_download_or_backend(self):
+        models_dir = self.root / "nested" / "models"
+        models_dir.mkdir(parents=True)
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        curl_marker = self.root / "curl-ran"
+        backend_marker = self.root / "backend-ran"
+        curl = bin_dir / "curl"
+        curl.write_text("#!/bin/sh\nprintf ran > \"$TEST_CURL_MARKER\"\nexit 1\n")
+        curl.chmod(0o755)
+        backend = bin_dir / "backend"
+        backend.write_text("#!/bin/sh\nprintf ran > \"$TEST_BACKEND_MARKER\"\n")
+        backend.chmod(0o755)
+
+        result = self.run_bootstrap(
+            target=f"{models_dir}/",
+            command=(str(backend),),
+            env_extra={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "TEST_CURL_MARKER": str(curl_marker),
+                "TEST_BACKEND_MARKER": str(backend_marker),
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("filename", result.stderr)
+        self.assertFalse(curl_marker.exists())
+        self.assertFalse(backend_marker.exists())
+        self.assertEqual(list(models_dir.iterdir()), [])
+
     def test_signal_during_download_cleans_partial_and_does_not_start_backend(self):
         bin_dir = self.root / "bin"
         bin_dir.mkdir()

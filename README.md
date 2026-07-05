@@ -49,14 +49,18 @@ settings:
 - `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
 - `WHISPER_MODEL`, `WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and
   `WHISPER_LANGUAGE`: model path, pinned download, integrity hash, and language.
-- `WHISPER_NO_GPU`: defaults to `1`. The image is CPU-only, and the backend
-  forwards whisper.cpp's `-ng` flag when this setting is enabled.
 - `AGENT_MODE`: `heuristic` (the no-provider default), `gemini`, or `ollama`.
 - `GEMINI_API_KEY` and `GEMINI_MODEL`: Gemini credentials and model selection.
 - `OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The default
   `http://host.docker.internal:11434` reaches Ollama on the host; Compose adds
   the Linux host-gateway mapping while Docker Desktop provides the same name.
 - `DEMO_VIDEO_IDS`: optional comma-separated fixture video IDs.
+
+This Compose service is CPU-only: it fixes `WHISPER_NO_GPU=1`, always forwards
+whisper.cpp's `-ng` flag, and does not offer a `.env` override. It also enables
+startup ASR validation, so the container fails fast when `yt-dlp`, `ffmpeg`,
+`ffprobe`, whisper.cpp, or the model is unavailable, before the backend starts
+serving or resumes jobs.
 
 The default Whisper model is English-only. For multilingual transcription, set
 all four model values as one coherent tuple: `WHISPER_MODEL`,
@@ -252,6 +256,11 @@ admin bearer token is stored privately at
 http://127.0.0.1:8000
 ```
 
+Native startup uses lazy ASR validation by default, so caption-only work can
+run without the ASR toolchain. Missing ASR tools are validated on demand when
+fallback transcription is needed. Set `CONTEXTBUBBLE_VALIDATE_ASR_ON_START=1`
+to opt into the same fail-fast startup behavior as the container.
+
 ## Load Extension
 
 1. Open `chrome://extensions` or `brave://extensions`.
@@ -278,8 +287,9 @@ explicit fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs the backend self-check and extension JavaScript syntax
-checks without requiring `yt-dlp`, `ffmpeg`, Whisper, Gemini, or Ollama.
+`scripts/check.sh` runs the unit and contract tests, backend self-check, and
+extension JavaScript syntax checks without requiring `yt-dlp`, `ffmpeg`,
+Whisper, Gemini, or Ollama.
 
 ## Implementation Notes
 

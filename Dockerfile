@@ -42,8 +42,6 @@ RUN git clone --branch "${WHISPER_CPP_REF}" --depth 1 \
 
 FROM python:3.12-slim-bookworm AS runtime
 
-ARG YT_DLP_VERSION=2026.7.4
-
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         ca-certificates \
@@ -51,15 +49,15 @@ RUN apt-get update \
         ffmpeg \
         gosu \
         libgomp1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir \
-        "yt-dlp[default,deno,pin,pin-deno]==${YT_DLP_VERSION}"
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
 COPY requirements.lock ./requirements.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
+COPY requirements-yt-dlp.lock ./requirements-yt-dlp.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock \
+    && python -m pip install --no-cache-dir --require-hashes -r requirements-yt-dlp.lock
 
 COPY backend ./backend
 COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli

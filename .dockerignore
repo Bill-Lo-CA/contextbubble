@@ -3,6 +3,7 @@
 !Dockerfile
 !requirements.txt
 !requirements.lock
+!requirements-yt-dlp.lock
 !backend/
 !backend/**
 !docker/

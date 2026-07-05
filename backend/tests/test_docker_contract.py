@@ -13,6 +13,7 @@ DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 REQUIREMENTS = ROOT / "requirements.txt"
 REQUIREMENTS_LOCK = ROOT / "requirements.lock"
+YTDLP_REQUIREMENTS_LOCK = ROOT / "requirements-yt-dlp.lock"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 GITIGNORE = ROOT / ".gitignore"
@@ -170,6 +171,23 @@ class DockerReadmeContractTest(unittest.TestCase):
             self.docker,
             r"(?is)(?:does not|not) run.{0,150}external YouTube/browser smoke tests",
         )
+        self.assertRegex(
+            self.docker,
+            r"(?is)fail(?:s)? fast.{0,200}(?:yt-dlp|ASR).{0,300}before.{0,100}backend",
+        )
+
+    def test_native_workflow_documents_lazy_asr_validation_default(self):
+        self.assertRegex(
+            self.native,
+            r"(?is)(?:lazy|on demand).{0,200}ASR.{0,200}(?:caption|caption-only)",
+        )
+
+    def test_check_script_validation_description_is_complete(self):
+        validation = self.section("Validate")
+
+        self.assertRegex(validation, r"(?is)unit.{0,30}contract tests")
+        self.assertIn("backend self-check", validation)
+        self.assertIn("JavaScript syntax checks", validation)
 
 
 class DockerComposeContractTest(unittest.TestCase):
@@ -178,6 +196,7 @@ class DockerComposeContractTest(unittest.TestCase):
         "CONTEXTBUBBLE_HOST": "0.0.0.0",
         "CONTEXTBUBBLE_PORT": "8000",
         "CONTEXTBUBBLE_DATA_DIR": "/data",
+        "CONTEXTBUBBLE_VALIDATE_ASR_ON_START": "1",
         "YTDLP_CMD": "yt-dlp",
         "FFMPEG_CMD": "ffmpeg",
         "FFPROBE_CMD": "ffprobe",
@@ -217,7 +236,7 @@ class DockerComposeContractTest(unittest.TestCase):
 
         self.assertIn("    build:\n      context: .\n      args:\n", compose)
         self.assertIn('        WHISPER_CPP_REF: "${WHISPER_CPP_REF:-v1.8.6}"\n', compose)
-        self.assertIn('        YT_DLP_VERSION: "${YT_DLP_VERSION:-2026.7.4}"\n', compose)
+        self.assertNotIn("YT_DLP_VERSION", compose)
 
     def test_compose_defines_runtime_and_provider_defaults(self):
         compose = self.read_compose()
@@ -256,9 +275,9 @@ class DockerComposeContractTest(unittest.TestCase):
             "DEMO_VIDEO_IDS=",
             "WHISPER_MODEL=/models/ggml-base.en.bin",
             "WHISPER_LANGUAGE=en",
-            "WHISPER_NO_GPU=1",
         ):
             self.assertIn(default, example)
+        self.assertNotIn("WHISPER_NO_GPU", example)
         self.assertRegex(example, r"(?i)english[- ]only")
         for multilingual_override in (
             "# WHISPER_MODEL=/models/ggml-base.bin",
@@ -283,9 +302,16 @@ class DockerComposeContractTest(unittest.TestCase):
         rendered = self.render_compose()
 
         self.assertIn('WHISPER_CPP_REF: "v1.8.6"', rendered)
-        self.assertIn('YT_DLP_VERSION: "2026.7.4"', rendered)
         self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
+
+    def test_compose_fixes_cpu_mode_without_dotenv_override(self):
+        compose = self.read_compose()
+
+        self.assertIn("CPU-only invariant", compose)
+        self.assertIn('      WHISPER_NO_GPU: "1"\n', compose)
+        self.assertNotRegex(compose, r"WHISPER_NO_GPU.*\$\{")
+        self.assertNotIn("WHISPER_NO_GPU", ENV_EXAMPLE.read_text())
 
     def test_compose_interpolates_with_copied_example_env(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -363,12 +389,12 @@ class DockerComposeContractTest(unittest.TestCase):
 
 
 class DockerImageContractTest(unittest.TestCase):
-    def test_dockerfile_pins_whisper_and_yt_dlp(self):
+    def test_dockerfile_pins_whisper_and_owns_yt_dlp_version_in_lock(self):
         self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
         dockerfile = DOCKERFILE.read_text()
 
         self.assertIn("ARG WHISPER_CPP_REF=v1.8.6", dockerfile)
-        self.assertIn("ARG YT_DLP_VERSION=2026.7.4", dockerfile)
+        self.assertNotIn("YT_DLP_VERSION", dockerfile)
 
     def test_dockerfile_builds_static_cpu_only_whisper_cli(self):
         self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
@@ -408,9 +434,31 @@ class DockerImageContractTest(unittest.TestCase):
     def test_dockerfile_installs_pinned_full_youtube_runtime(self):
         dockerfile = DOCKERFILE.read_text()
 
+        self.assertIn("COPY requirements-yt-dlp.lock ./requirements-yt-dlp.lock", dockerfile)
         self.assertIn(
-            '"yt-dlp[default,deno,pin,pin-deno]==${YT_DLP_VERSION}"',
+            "python -m pip install --no-cache-dir --require-hashes "
+            "-r requirements-yt-dlp.lock",
             dockerfile,
+        )
+        self.assertNotIn("yt-dlp[default", dockerfile)
+        self.assertNotRegex(dockerfile, r"pip install[^\n]*yt-dlp(?:==|\[)")
+
+    def test_youtube_runtime_lock_pins_extras_and_transitives_with_hashes(self):
+        self.assertTrue(YTDLP_REQUIREMENTS_LOCK.is_file())
+        lock = YTDLP_REQUIREMENTS_LOCK.read_text()
+
+        self.assertRegex(lock, r"(?m)^#    uv \d+\.\d+\.\d+ pip compile .+$")
+        self.assertEqual(
+            (ROOT / "requirements-yt-dlp.in").read_text().strip(),
+            "yt-dlp[default,deno,pin,pin-deno]==2026.7.4",
+        )
+        self.assertIn("yt-dlp==2026.7.4", lock)
+        self.assertRegex(lock, r"(?m)^deno==")
+        self.assertRegex(lock, r"(?m)^yt-dlp-ejs==")
+        package_blocks = re.split(r"(?m)(?=^[a-zA-Z0-9])", lock)[1:]
+        self.assertGreater(len(package_blocks), 3)
+        self.assertTrue(
+            all(re.search(r"(?m)^    --hash=sha256:[0-9a-f]{64}(?: \\)?$", block) for block in package_blocks)
         )
 
     def test_application_dependencies_are_pinned(self):
@@ -515,6 +563,7 @@ class DockerImageContractTest(unittest.TestCase):
             "!Dockerfile",
             "!requirements.txt",
             "!requirements.lock",
+            "!requirements-yt-dlp.lock",
             "!backend/",
             "!backend/**",
             "!docker/",

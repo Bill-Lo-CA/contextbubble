@@ -13,6 +13,13 @@ case "$WHISPER_MODEL" in
         ;;
 esac
 
+case "$WHISPER_MODEL" in
+    */models/|*/models)
+        echo "error: WHISPER_MODEL must include a model filename" >&2
+        exit 1
+        ;;
+esac
+
 case "/$WHISPER_MODEL/" in
     */../*|*/./*)
         echo "error: WHISPER_MODEL must not contain relative path components" >&2
@@ -23,13 +30,14 @@ esac
 model_dir=${WHISPER_MODEL%/*}
 mkdir -p "$model_dir"
 
-checksum_matches() {
+model_valid() {
+    [ -f "$1" ] || return 1
     actual=$(sha256sum "$1")
     actual=${actual%% *}
     [ "$actual" = "$WHISPER_MODEL_SHA256" ]
 }
 
-if [ -f "$WHISPER_MODEL" ] && checksum_matches "$WHISPER_MODEL"; then
+if model_valid "$WHISPER_MODEL"; then
     echo "model already valid: $WHISPER_MODEL"
     if [ "$#" -gt 0 ]; then
         exec "$@"
@@ -77,13 +85,17 @@ if [ "$curl_status" -ne 0 ]; then
     exit "$curl_status"
 fi
 
-if ! checksum_matches "$partial"; then
+if ! model_valid "$partial"; then
     echo "error: model checksum mismatch" >&2
     exit 1
 fi
 
 mv -f "$partial" "$WHISPER_MODEL"
 partial=
+if ! model_valid "$WHISPER_MODEL"; then
+    echo "error: installed model is not a valid regular file" >&2
+    exit 1
+fi
 trap - 0 HUP INT TERM
 echo "model downloaded: $WHISPER_MODEL"
 
