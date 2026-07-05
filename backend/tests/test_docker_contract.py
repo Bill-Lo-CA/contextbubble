@@ -7,6 +7,44 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
+DOCKERFILE = ROOT / "Dockerfile"
+DOCKERIGNORE = ROOT / ".dockerignore"
+
+
+class DockerImageContractTest(unittest.TestCase):
+    def test_dockerfile_pins_whisper_and_yt_dlp(self):
+        self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
+        dockerfile = DOCKERFILE.read_text()
+
+        self.assertIn("ARG WHISPER_CPP_REF=v1.8.6", dockerfile)
+        self.assertIn("ARG YT_DLP_VERSION=2026.7.4", dockerfile)
+
+    def test_dockerfile_builds_static_cpu_only_whisper_cli(self):
+        self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
+        dockerfile = DOCKERFILE.read_text()
+
+        for option in (
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DGGML_CUDA=OFF",
+            "-DGGML_VULKAN=OFF",
+            "-DGGML_METAL=OFF",
+        ):
+            self.assertIn(option, dockerfile)
+
+    def test_dockerfile_defines_app_user_and_entrypoint(self):
+        self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
+        dockerfile = DOCKERFILE.read_text()
+
+        self.assertIn("groupadd --gid 10001 contextbubble", dockerfile)
+        self.assertIn("useradd --uid 10001 --gid contextbubble", dockerfile)
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/contextbubble-entrypoint"]', dockerfile)
+
+    def test_dockerignore_excludes_local_secrets_state_and_git(self):
+        self.assertTrue(DOCKERIGNORE.is_file(), ".dockerignore must exist")
+        exclusions = set(DOCKERIGNORE.read_text().splitlines())
+
+        for exclusion in (".env", "backend/.contextbubble", ".git"):
+            self.assertIn(exclusion, exclusions)
 
 
 class DockerEntrypointContractTest(unittest.TestCase):
