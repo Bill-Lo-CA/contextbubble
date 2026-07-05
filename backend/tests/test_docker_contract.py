@@ -1,9 +1,15 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - optional test-only validator
+    yaml = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +18,172 @@ DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 REQUIREMENTS = ROOT / "requirements.txt"
 REQUIREMENTS_LOCK = ROOT / "requirements.lock"
+COMPOSE = ROOT / "compose.yaml"
+ENV_EXAMPLE = ROOT / ".env.example"
+GITIGNORE = ROOT / ".gitignore"
+
+
+class DockerComposeContractTest(unittest.TestCase):
+    EXPECTED_ENVIRONMENT = {
+        "CONTEXTBUBBLE_TOKEN": "${CONTEXTBUBBLE_TOKEN:-}",
+        "CONTEXTBUBBLE_HOST": "0.0.0.0",
+        "CONTEXTBUBBLE_PORT": "8000",
+        "CONTEXTBUBBLE_DATA_DIR": "/data",
+        "YTDLP_CMD": "yt-dlp",
+        "FFMPEG_CMD": "ffmpeg",
+        "FFPROBE_CMD": "ffprobe",
+        "WHISPER_CMD": "/opt/whisper/bin/whisper-cli",
+        "WHISPER_MODEL": "${WHISPER_MODEL:-/models/ggml-base.en.bin}",
+        "WHISPER_MODEL_URL": (
+            "${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+            "80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.en.bin}"
+        ),
+        "WHISPER_MODEL_SHA256": (
+            "${WHISPER_MODEL_SHA256:-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002}"
+        ),
+        "WHISPER_LANGUAGE": "${WHISPER_LANGUAGE:-en}",
+        "WHISPER_NO_GPU": "1",
+        "AGENT_MODE": "${AGENT_MODE:-heuristic}",
+        "GEMINI_API_KEY": "${GEMINI_API_KEY:-}",
+        "GEMINI_MODEL": "${GEMINI_MODEL:-gemini-2.5-flash}",
+        "OLLAMA_BASE_URL": "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}",
+        "OLLAMA_MODEL": "${OLLAMA_MODEL:-qwen3:8b}",
+        "DEMO_VIDEO_IDS": "${DEMO_VIDEO_IDS:-}",
+    }
+
+    def test_compose_declares_single_loopback_backend_service(self):
+        compose = self.read_compose()
+
+        self.assertEqual(set(compose["services"]), {"backend"})
+        backend = compose["services"]["backend"]
+        self.assertEqual(backend["image"], "contextbubble-backend:cpu")
+        self.assertEqual(backend["restart"], "unless-stopped")
+        self.assertEqual(backend["ports"], ["127.0.0.1:8000:8000"])
+        without_loopback_binding = COMPOSE.read_text().replace(
+            '"127.0.0.1:8000:8000"', ""
+        )
+        self.assertNotIn("8000:8000", without_loopback_binding)
+
+    def test_compose_build_arguments_are_pinned_with_overridable_defaults(self):
+        build = self.read_compose()["services"]["backend"]["build"]
+
+        self.assertEqual(build["context"], ".")
+        self.assertEqual(
+            build["args"],
+            {
+                "WHISPER_CPP_REF": "${WHISPER_CPP_REF:-v1.8.6}",
+                "YT_DLP_VERSION": "${YT_DLP_VERSION:-2026.7.4}",
+            },
+        )
+
+    def test_compose_defines_runtime_and_provider_defaults(self):
+        environment = self.read_compose()["services"]["backend"]["environment"]
+
+        self.assertEqual(environment, self.EXPECTED_ENVIRONMENT)
+
+    def test_compose_connects_host_and_persistent_data(self):
+        compose = self.read_compose()
+        backend = compose["services"]["backend"]
+
+        self.assertEqual(backend["extra_hosts"], ["host.docker.internal:host-gateway"])
+        self.assertEqual(
+            backend["volumes"],
+            ["contextbubble-data:/data", "contextbubble-models:/models"],
+        )
+        self.assertEqual(
+            compose["volumes"],
+            {
+                "contextbubble-data": {"name": "contextbubble-data"},
+                "contextbubble-models": {"name": "contextbubble-models"},
+            },
+        )
+
+    def test_env_example_is_secret_free_and_documents_model_choices(self):
+        self.assertTrue(ENV_EXAMPLE.is_file(), ".env.example must exist")
+        example = ENV_EXAMPLE.read_text()
+
+        self.assertRegex(example, r"(?m)^CONTEXTBUBBLE_TOKEN=$")
+        self.assertIn("/data/contextbubble.token", example)
+        for default in (
+            "AGENT_MODE=heuristic",
+            "GEMINI_API_KEY=",
+            "GEMINI_MODEL=gemini-2.5-flash",
+            "OLLAMA_BASE_URL=http://host.docker.internal:11434",
+            "OLLAMA_MODEL=qwen3:8b",
+            "DEMO_VIDEO_IDS=",
+            "WHISPER_MODEL=/models/ggml-base.en.bin",
+            "WHISPER_LANGUAGE=en",
+            "WHISPER_NO_GPU=1",
+        ):
+            self.assertIn(default, example)
+        self.assertRegex(example, r"(?i)english[- ]only")
+        for multilingual_override in (
+            "# WHISPER_MODEL=/models/ggml-base.bin",
+            "# WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+            "80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.bin",
+            "# WHISPER_MODEL_SHA256=60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "# WHISPER_LANGUAGE=zh",
+        ):
+            self.assertIn(multilingual_override, example)
+        self.assertNotRegex(example, r"(?m)^CONTEXTBUBBLE_TOKEN=\S+")
+        self.assertNotRegex(example, r"(?m)^GEMINI_API_KEY=\S+")
+        self.assertNotIn("AIza", example)
+
+    def test_gitignore_ignores_local_env_but_tracks_example(self):
+        rules = GITIGNORE.read_text().splitlines()
+
+        self.assertIn(".env", rules)
+        self.assertIn(".env.*", rules)
+        self.assertIn("!.env.example", rules)
+
+    def test_compose_interpolates_with_no_env_file(self):
+        compose = self.render_compose()
+        backend = compose["services"]["backend"]
+
+        self.assertEqual(backend["build"]["args"]["WHISPER_CPP_REF"], "v1.8.6")
+        self.assertEqual(backend["build"]["args"]["YT_DLP_VERSION"], "2026.7.4")
+        self.assertEqual(backend["environment"]["CONTEXTBUBBLE_TOKEN"], "")
+        self.assertEqual(backend["environment"]["AGENT_MODE"], "heuristic")
+
+    def test_compose_interpolates_with_copied_example_env(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            shutil.copyfile(ENV_EXAMPLE, env_file)
+            compose = self.render_compose(env_file)
+
+        environment = compose["services"]["backend"]["environment"]
+        self.assertEqual(environment["CONTEXTBUBBLE_TOKEN"], "")
+        self.assertEqual(environment["WHISPER_MODEL"], "/models/ggml-base.en.bin")
+        self.assertEqual(environment["AGENT_MODE"], "heuristic")
+        self.assertEqual(environment["OLLAMA_MODEL"], "qwen3:8b")
+
+    def read_compose(self):
+        self.assertTrue(COMPOSE.is_file(), "compose.yaml must exist")
+        if yaml is None:
+            self.skipTest("PyYAML is unavailable for optional Compose structure validation")
+        return yaml.safe_load(COMPOSE.read_text())
+
+    def render_compose(self, env_file=None):
+        if yaml is None:
+            self.skipTest("PyYAML is unavailable for optional Compose interpolation validation")
+        environment = {}
+        if env_file is not None:
+            for line in env_file.read_text().splitlines():
+                if line and not line.startswith("#") and "=" in line:
+                    name, value = line.split("=", 1)
+                    environment[name] = value
+
+        def interpolate(match):
+            name, default = match.groups()
+            return environment.get(name) or default
+
+        rendered = re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}",
+            interpolate,
+            COMPOSE.read_text(),
+        )
+        self.assertNotIn("${", rendered)
+        return yaml.safe_load(rendered)
 
 
 class DockerImageContractTest(unittest.TestCase):
