@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 
 from config import *
 
@@ -16,7 +17,7 @@ def ensure_column(conn, table, column, definition):
     if column not in columns:
         conn.execute(f"alter table {table} add column {column} {definition}")
 def init_db():
-    with connect_db() as conn:
+    with closing(connect_db()) as conn, conn:
         conn.executescript("""
             create table if not exists videos (
                 video_id text primary key,
@@ -138,6 +139,11 @@ def init_db():
                 name text primary key,
                 applied_at text not null
             );
+            create table if not exists session_tokens (
+                token_hash text primary key,
+                expires_at real not null,
+                created_at text not null
+            );
         """)
         ensure_column(conn, "preparation_jobs", "source_policy", "text not null default 'live'")
         ensure_column(conn, "transcript_sources", "metadata", "text default '{}'")
@@ -152,10 +158,14 @@ def init_db():
                 on asr_chunks(job_id, status);
             create index if not exists idx_preparation_events_job
                 on preparation_events(job_id, created_at);
-            create index if not exists idx_translation_cache_lookup
-                on translation_cache(segment_id, target_language, provider, model, prompt_version);
+            create index if not exists idx_session_tokens_expiry
+                on session_tokens(expires_at);
         """)
         conn.execute(
             "insert or ignore into schema_migrations values (?, ?)",
             ("2026-07-project-review-t002-t005", now_iso()),
+        )
+        conn.execute(
+            "insert or ignore into schema_migrations values (?, ?)",
+            ("2026-07-docker-session-persistence", now_iso()),
         )

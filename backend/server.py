@@ -363,6 +363,7 @@ async def analysis(analysis_id: str, authorization: str = Header("")):
 def main():
     validate_config()
     init_db()
+    auth.initialize_auth()
     resume_preparations()
     print(f"ContextBubble backend on http://{BACKEND_HOST}:{BACKEND_PORT}")
     print(f"ContextBubble API token: {auth.API_TOKEN}")

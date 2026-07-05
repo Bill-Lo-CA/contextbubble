@@ -120,6 +120,7 @@ class RuntimeConfigTests(unittest.TestCase):
                     mock.patch.object(server, "BACKEND_PORT", 9000),
                     mock.patch.object(server, "validate_config"),
                     mock.patch.object(server, "init_db"),
+                    mock.patch.object(server.auth, "initialize_auth"),
                     mock.patch.object(server, "resume_preparations"),
                     mock.patch("builtins.print"),
                 ):
