@@ -27,6 +27,11 @@ case "/$WHISPER_MODEL/" in
         ;;
 esac
 
+if [ -d "$WHISPER_MODEL" ]; then
+    echo "error: WHISPER_MODEL target must not be a directory" >&2
+    exit 1
+fi
+
 model_dir=${WHISPER_MODEL%/*}
 mkdir -p "$model_dir"
 
@@ -90,12 +95,12 @@ if ! model_valid "$partial"; then
     exit 1
 fi
 
-mv -f "$partial" "$WHISPER_MODEL"
-partial=
+mv -fT "$partial" "$WHISPER_MODEL"
 if ! model_valid "$WHISPER_MODEL"; then
     echo "error: installed model is not a valid regular file" >&2
     exit 1
 fi
+partial=
 trap - 0 HUP INT TERM
 echo "model downloaded: $WHISPER_MODEL"
 

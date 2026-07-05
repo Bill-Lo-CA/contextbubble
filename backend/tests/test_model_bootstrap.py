@@ -133,6 +133,52 @@ class ModelBootstrapTest(unittest.TestCase):
         self.assertFalse(backend_marker.exists())
         self.assertEqual(list(models_dir.iterdir()), [])
 
+    def test_filename_directory_target_is_rejected_without_orphans(self):
+        self.target.mkdir(parents=True)
+        sentinel = self.target / "existing-file"
+        sentinel.write_text("unchanged")
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        curl_marker = self.root / "curl-ran"
+        backend_marker = self.root / "backend-ran"
+        curl = bin_dir / "curl"
+        curl.write_text("#!/bin/sh\nprintf ran > \"$TEST_CURL_MARKER\"\nexit 1\n")
+        curl.chmod(0o755)
+        backend = bin_dir / "backend"
+        backend.write_text("#!/bin/sh\nprintf ran > \"$TEST_BACKEND_MARKER\"\n")
+        backend.chmod(0o755)
+
+        result = self.run_bootstrap(
+            command=(str(backend),),
+            env_extra={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "TEST_CURL_MARKER": str(curl_marker),
+                "TEST_BACKEND_MARKER": str(backend_marker),
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("directory", result.stderr)
+        self.assertFalse(curl_marker.exists())
+        self.assertFalse(backend_marker.exists())
+        self.assertEqual(list(self.target.iterdir()), [sentinel])
+        self.assertEqual(sentinel.read_text(), "unchanged")
+        self.assertEqual(list(self.target.parent.glob("*.partial.*")), [])
+
+    def test_install_disallows_directory_targets_until_final_validation(self):
+        script = BOOTSTRAP.read_text()
+
+        self.assertIn('mv -fT "$partial" "$WHISPER_MODEL"', script)
+        move = script.index('mv -fT "$partial" "$WHISPER_MODEL"')
+        final_validation = script.index(
+            'if ! model_valid "$WHISPER_MODEL"',
+            move,
+        )
+        clear_partial = script.index("partial=\n", final_validation)
+
+        self.assertLess(move, final_validation)
+        self.assertLess(final_validation, clear_partial)
+
     def test_signal_during_download_cleans_partial_and_does_not_start_backend(self):
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
