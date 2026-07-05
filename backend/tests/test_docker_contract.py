@@ -6,11 +6,6 @@ import subprocess
 import tempfile
 import unittest
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - optional test-only validator
-    yaml = None
-
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
@@ -21,6 +16,7 @@ REQUIREMENTS_LOCK = ROOT / "requirements.lock"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 GITIGNORE = ROOT / ".gitignore"
+CHECK_COMPOSE = ROOT / "scripts" / "check-compose.sh"
 
 
 class DockerComposeContractTest(unittest.TestCase):
@@ -54,48 +50,42 @@ class DockerComposeContractTest(unittest.TestCase):
     def test_compose_declares_single_loopback_backend_service(self):
         compose = self.read_compose()
 
-        self.assertEqual(set(compose["services"]), {"backend"})
-        backend = compose["services"]["backend"]
-        self.assertEqual(backend["image"], "contextbubble-backend:cpu")
-        self.assertEqual(backend["restart"], "unless-stopped")
-        self.assertEqual(backend["ports"], ["127.0.0.1:8000:8000"])
-        without_loopback_binding = COMPOSE.read_text().replace(
+        self.assertTrue(compose.startswith("services:\n  backend:\n"))
+        self.assertIn("    image: contextbubble-backend:cpu\n", compose)
+        self.assertIn("    restart: unless-stopped\n", compose)
+        self.assertIn('      - "127.0.0.1:8000:8000"\n', compose)
+        without_loopback_binding = compose.replace(
             '"127.0.0.1:8000:8000"', ""
         )
         self.assertNotIn("8000:8000", without_loopback_binding)
 
     def test_compose_build_arguments_are_pinned_with_overridable_defaults(self):
-        build = self.read_compose()["services"]["backend"]["build"]
+        compose = self.read_compose()
 
-        self.assertEqual(build["context"], ".")
-        self.assertEqual(
-            build["args"],
-            {
-                "WHISPER_CPP_REF": "${WHISPER_CPP_REF:-v1.8.6}",
-                "YT_DLP_VERSION": "${YT_DLP_VERSION:-2026.7.4}",
-            },
-        )
+        self.assertIn("    build:\n      context: .\n      args:\n", compose)
+        self.assertIn('        WHISPER_CPP_REF: "${WHISPER_CPP_REF:-v1.8.6}"\n', compose)
+        self.assertIn('        YT_DLP_VERSION: "${YT_DLP_VERSION:-2026.7.4}"\n', compose)
 
     def test_compose_defines_runtime_and_provider_defaults(self):
-        environment = self.read_compose()["services"]["backend"]["environment"]
+        compose = self.read_compose()
 
-        self.assertEqual(environment, self.EXPECTED_ENVIRONMENT)
+        self.assertIn("    environment:\n", compose)
+        for name, value in self.EXPECTED_ENVIRONMENT.items():
+            self.assertIn(f'      {name}: "{value}"\n', compose)
 
     def test_compose_connects_host_and_persistent_data(self):
         compose = self.read_compose()
-        backend = compose["services"]["backend"]
 
-        self.assertEqual(backend["extra_hosts"], ["host.docker.internal:host-gateway"])
-        self.assertEqual(
-            backend["volumes"],
-            ["contextbubble-data:/data", "contextbubble-models:/models"],
-        )
-        self.assertEqual(
-            compose["volumes"],
-            {
-                "contextbubble-data": {"name": "contextbubble-data"},
-                "contextbubble-models": {"name": "contextbubble-models"},
-            },
+        self.assertIn('      - "host.docker.internal:host-gateway"\n', compose)
+        self.assertIn('      - "contextbubble-data:/data"\n', compose)
+        self.assertIn('      - "contextbubble-models:/models"\n', compose)
+        self.assertIn(
+            "\nvolumes:\n"
+            "  contextbubble-data:\n"
+            "    name: contextbubble-data\n"
+            "  contextbubble-models:\n"
+            "    name: contextbubble-models\n",
+            compose,
         )
 
     def test_env_example_is_secret_free_and_documents_model_choices(self):
@@ -137,42 +127,66 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn("!.env.example", rules)
 
     def test_compose_interpolates_with_no_env_file(self):
-        compose = self.render_compose()
-        backend = compose["services"]["backend"]
+        rendered = self.render_compose()
 
-        self.assertEqual(backend["build"]["args"]["WHISPER_CPP_REF"], "v1.8.6")
-        self.assertEqual(backend["build"]["args"]["YT_DLP_VERSION"], "2026.7.4")
-        self.assertEqual(backend["environment"]["CONTEXTBUBBLE_TOKEN"], "")
-        self.assertEqual(backend["environment"]["AGENT_MODE"], "heuristic")
+        self.assertIn('WHISPER_CPP_REF: "v1.8.6"', rendered)
+        self.assertIn('YT_DLP_VERSION: "2026.7.4"', rendered)
+        self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
+        self.assertIn('AGENT_MODE: "heuristic"', rendered)
 
     def test_compose_interpolates_with_copied_example_env(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             env_file = Path(temp_dir) / ".env"
             shutil.copyfile(ENV_EXAMPLE, env_file)
-            compose = self.render_compose(env_file)
+            rendered = self.render_compose(self.read_env(env_file))
 
-        environment = compose["services"]["backend"]["environment"]
-        self.assertEqual(environment["CONTEXTBUBBLE_TOKEN"], "")
-        self.assertEqual(environment["WHISPER_MODEL"], "/models/ggml-base.en.bin")
-        self.assertEqual(environment["AGENT_MODE"], "heuristic")
-        self.assertEqual(environment["OLLAMA_MODEL"], "qwen3:8b")
+        self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
+        self.assertIn('WHISPER_MODEL: "/models/ggml-base.en.bin"', rendered)
+        self.assertIn('AGENT_MODE: "heuristic"', rendered)
+        self.assertIn('OLLAMA_MODEL: "qwen3:8b"', rendered)
+
+    def test_multilingual_override_renders_as_one_coherent_tuple(self):
+        expected = {
+            "WHISPER_MODEL": "/models/ggml-base.bin",
+            "WHISPER_MODEL_URL": (
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+                "80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.bin"
+            ),
+            "WHISPER_MODEL_SHA256": (
+                "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+            ),
+            "WHISPER_LANGUAGE": "zh",
+        }
+        overrides = {}
+        for line in ENV_EXAMPLE.read_text().splitlines():
+            uncommented = line.removeprefix("# ")
+            if "=" in uncommented:
+                name, value = uncommented.split("=", 1)
+                if name in expected:
+                    overrides[name] = value
+
+        self.assertEqual(overrides, expected)
+        rendered = self.render_compose(overrides)
+        for name, value in expected.items():
+            self.assertIn(f'{name}: "{value}"', rendered)
+
+    def test_compose_validator_checks_both_env_modes_without_mutating_dotenv(self):
+        self.assertTrue(CHECK_COMPOSE.is_file(), "scripts/check-compose.sh must exist")
+        script = CHECK_COMPOSE.read_text()
+
+        self.assertTrue(script.startswith("#!/usr/bin/env sh\nset -eu\n"))
+        self.assertIn("docker compose --env-file /dev/null config --quiet", script)
+        self.assertIn("docker compose --env-file .env.example config --quiet", script)
+        self.assertIn("docker compose is required", script)
+        for mutation in ("cp .env", "rm .env", "> .env", "mv .env"):
+            self.assertNotIn(mutation, script)
 
     def read_compose(self):
         self.assertTrue(COMPOSE.is_file(), "compose.yaml must exist")
-        if yaml is None:
-            self.skipTest("PyYAML is unavailable for optional Compose structure validation")
-        return yaml.safe_load(COMPOSE.read_text())
+        return COMPOSE.read_text()
 
-    def render_compose(self, env_file=None):
-        if yaml is None:
-            self.skipTest("PyYAML is unavailable for optional Compose interpolation validation")
-        environment = {}
-        if env_file is not None:
-            for line in env_file.read_text().splitlines():
-                if line and not line.startswith("#") and "=" in line:
-                    name, value = line.split("=", 1)
-                    environment[name] = value
-
+    def render_compose(self, environment=None):
+        environment = environment or {}
         def interpolate(match):
             name, default = match.groups()
             return environment.get(name) or default
@@ -183,7 +197,16 @@ class DockerComposeContractTest(unittest.TestCase):
             COMPOSE.read_text(),
         )
         self.assertNotIn("${", rendered)
-        return yaml.safe_load(rendered)
+        return rendered
+
+    @staticmethod
+    def read_env(env_file):
+        environment = {}
+        for line in env_file.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                name, value = line.split("=", 1)
+                environment[name] = value
+        return environment
 
 
 class DockerImageContractTest(unittest.TestCase):
