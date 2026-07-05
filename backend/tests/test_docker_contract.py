@@ -23,15 +23,50 @@ README = ROOT / "README.md"
 class DockerReadmeContractTest(unittest.TestCase):
     def setUp(self):
         self.readme = README.read_text()
+        self.docker = self.section("Run Backend with Docker")
+        self.native = self.section("Run Backend Natively")
+
+    def section(self, heading):
+        match = re.search(
+            rf"(?ms)^## {re.escape(heading)}\n.*?(?=^## |\Z)",
+            self.readme,
+        )
+        self.assertIsNotNone(match, f"README must contain the {heading!r} section")
+        return match.group(0)
 
     def test_docker_workflow_precedes_native_setup(self):
         docker_heading = self.readme.index("## Run Backend with Docker")
         native_heading = self.readme.index("## Run Backend Natively")
 
         self.assertLess(docker_heading, native_heading)
-        self.assertIn("docker compose up --build", self.readme)
-        self.assertIn("docker compose logs backend", self.readme)
-        self.assertIn("http://127.0.0.1:8000", self.readme)
+        self.assertIn("python -m venv .venv", self.native)
+
+    def test_docker_quick_start_keeps_logs_in_another_terminal(self):
+        self.assertIn("docker compose up --build", self.docker)
+        self.assertRegex(
+            self.docker,
+            r"(?is)another terminal.{0,200}docker compose logs backend",
+        )
+        self.assertRegex(self.docker, r"(?is)admin token.{0,50}pairing code")
+
+    def test_docker_api_is_loopback_only_and_not_lan_exposed(self):
+        self.assertRegex(
+            self.docker,
+            r"(?is)http://127\.0\.0\.1:8000.{0,150}(?:only|does not expose.{0,30}LAN)",
+        )
+        self.assertNotIn("0.0.0.0:8000", self.docker)
+        self.assertNotRegex(
+            self.docker,
+            r"(?i)(?:available|accessible|exposed) (?:on|to) (?:the )?LAN",
+        )
+
+    def test_docker_dotenv_is_optional_interpolation_not_image_content(self):
+        self.assertRegex(
+            self.docker,
+            r"(?is)No `.env` file is needed.{0,200}interpolation.{0,200}"
+            r"\.dockerignore.{0,100}excludes",
+        )
+        self.assertRegex(self.docker, r"(?is)defaults.{0,300}cp \.env\.example \.env")
 
     def test_docker_workflow_documents_persistent_state_and_restarts(self):
         for detail in (
@@ -44,8 +79,12 @@ class DockerReadmeContractTest(unittest.TestCase):
             "contextbubble.token",
             "fresh pairing code",
         ):
-            self.assertIn(detail, self.readme)
-        self.assertRegex(self.readme, r"unexpired browser\s+session")
+            self.assertIn(detail, self.docker)
+        self.assertRegex(
+            self.docker,
+            r"(?is)generated admin token.{0,100}reused.{0,100}"
+            r"unexpired browser\s+session.{0,100}remains valid.{0,150}fresh pairing code",
+        )
         for command in (
             "docker compose stop",
             "docker compose start",
@@ -53,15 +92,19 @@ class DockerReadmeContractTest(unittest.TestCase):
             "docker compose down",
             "docker compose up",
         ):
-            self.assertIn(command, self.readme)
+            self.assertIn(command, self.docker)
+        self.assertRegex(
+            self.docker,
+            r"(?is)docker compose stop.{0,300}all preserve named volumes",
+        )
 
     def test_docker_workflow_warns_that_only_down_v_destroys_data(self):
         self.assertRegex(
-            self.readme,
+            self.docker,
             r"(?is)docker compose down`?.{0,300}preserve.{0,500}"
             r"docker compose down -v`?.{0,100}(?:destructive|deletes)",
         )
-        destructive = self.readme[self.readme.index("docker compose down -v") :]
+        destructive = self.docker[self.docker.index("docker compose down -v") :]
         for lost_state in (
             "analyses",
             "transcripts",
@@ -72,24 +115,61 @@ class DockerReadmeContractTest(unittest.TestCase):
         ):
             self.assertIn(lost_state, destructive)
         self.assertRegex(destructive, r"session\s+database")
+        normal_down = self.docker[: self.docker.index("docker compose down -v")]
+        self.assertNotRegex(
+            normal_down,
+            r"(?is)docker compose down`?.{0,100}(?:deletes|removes) (?:the )?"
+            r"(?:named )?volumes",
+        )
 
     def test_docker_workflow_documents_model_configuration_as_a_tuple(self):
-        self.assertIn("English-only", self.readme)
+        self.assertIn("English-only", self.docker)
         for setting in (
             "WHISPER_MODEL",
             "WHISPER_MODEL_URL",
             "WHISPER_MODEL_SHA256",
             "WHISPER_LANGUAGE",
         ):
-            self.assertIn(setting, self.readme)
-        self.assertIn("zh", self.readme)
-        self.assertIn("auto", self.readme)
-        self.assertIn("WHISPER_NO_GPU", self.readme)
-        self.assertIn("-ng", self.readme)
+            self.assertIn(setting, self.docker)
+        self.assertRegex(
+            self.docker,
+            r"(?is)multilingual transcription.{0,100}all four.{0,300}"
+            r"WHISPER_LANGUAGE.{0,300}WHISPER_LANGUAGE=zh.{0,200}"
+            r"WHISPER_LANGUAGE=auto",
+        )
+        self.assertIn("WHISPER_NO_GPU", self.docker)
+        self.assertIn("-ng", self.docker)
+
+    def test_docker_workflow_documents_asr_resume_and_cleanup_lifecycle(self):
+        self.assertRegex(
+            self.docker,
+            r"(?is)interrupted (?:queued|processing).{0,100}jobs resume",
+        )
+        self.assertRegex(
+            self.docker,
+            r"(?is)failed and interrupted jobs.{0,150}/data/media/<job-id>.{0,150}"
+            r"diagnosis.{0,50}resume inputs",
+        )
+        self.assertRegex(
+            self.docker,
+            r"(?is)failed jobs\s+do\s+not automatically retry.{0,150}"
+            r"only successful ASR (?:work|paths|transcriptions).{0,100}"
+            r"(?:removes?|clean up) (?:(?:its|their) )?media",
+        )
 
     def test_docker_workflow_documents_validation(self):
-        self.assertIn("scripts/check-compose.sh", self.readme)
-        self.assertIn("requires Docker Compose", self.readme)
+        self.assertIn("scripts/check-compose.sh", self.docker)
+        self.assertIn("requires Docker Compose", self.docker)
+        self.assertRegex(
+            self.docker,
+            r"(?is)POSIX shell.{0,100}(?:Git Bash|WSL).{0,300}"
+            r"docker compose config --quiet.{0,300}"
+            r"docker compose --env-file \.env\.example config --quiet",
+        )
+        self.assertRegex(
+            self.docker,
+            r"(?is)(?:does not|not) run.{0,150}external YouTube/browser smoke tests",
+        )
 
 
 class DockerComposeContractTest(unittest.TestCase):

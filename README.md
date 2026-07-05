@@ -21,13 +21,15 @@ Docker Desktop to use Linux containers. From the repo root, run:
 docker compose up --build
 ```
 
-The first startup downloads the default English-only `ggml-base.en.bin` model
-into the `contextbubble-models` volume. Later starts reuse that download. Follow
-the backend output to find the admin token and short pairing code:
+This command runs attached. In another terminal, run the following command to
+read the admin token and short pairing code from the backend output:
 
 ```sh
 docker compose logs backend
 ```
+
+The first startup downloads the default English-only `ggml-base.en.bin` model
+into the `contextbubble-models` volume. Later starts reuse that download.
 
 The API is available only at `http://127.0.0.1:8000`; the Compose port binding
 does not expose it to the LAN.
@@ -84,8 +86,12 @@ analyses, transcripts, logs, ASR resume files, the generated token, the session
 database, and the model. The next start requires the model download and browser
 pairing again.
 
-YouTube caption files are temporary under `/tmp`. ASR audio is retained under
-`/data/media` while a job can resume, then successful jobs clean up that media.
+YouTube caption files are temporary under `/tmp`. Interrupted queued or
+processing jobs resume after a backend restart. Failed and interrupted jobs may
+retain `/data/media/<job-id>` for diagnosis and resume inputs; failed jobs do
+not automatically retry. Only successful ASR work removes its media, after the
+transcript merge and before downstream analysis. A later analysis-stage failure
+does not restore media that ASR already removed.
 
 Validate both the default and example Compose configurations with:
 
@@ -93,8 +99,20 @@ Validate both the default and example Compose configurations with:
 scripts/check-compose.sh
 ```
 
-This validation requires Docker Compose. It checks configuration rendering; it
-does not run the image or external YouTube/browser smoke tests.
+This validation requires Docker Compose and a POSIX shell. On Windows, run the
+script from Git Bash or WSL. Its `/dev/null` default-config check is not portable
+to PowerShell or CMD. As a plain cross-platform fallback, validate defaults in a
+checkout where no repo-root `.env` exists (do not delete an existing `.env`),
+then validate the example:
+
+```sh
+docker compose config --quiet
+docker compose --env-file .env.example config --quiet
+```
+
+These commands check configuration rendering. They do not run the image or
+external YouTube/browser smoke tests. Docker image build, backend startup, model
+download, and end-to-end behavior remain separate runtime verification steps.
 
 ## Native Requirements
 
