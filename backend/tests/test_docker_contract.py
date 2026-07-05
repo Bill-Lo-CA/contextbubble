@@ -17,6 +17,79 @@ COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 GITIGNORE = ROOT / ".gitignore"
 CHECK_COMPOSE = ROOT / "scripts" / "check-compose.sh"
+README = ROOT / "README.md"
+
+
+class DockerReadmeContractTest(unittest.TestCase):
+    def setUp(self):
+        self.readme = README.read_text()
+
+    def test_docker_workflow_precedes_native_setup(self):
+        docker_heading = self.readme.index("## Run Backend with Docker")
+        native_heading = self.readme.index("## Run Backend Natively")
+
+        self.assertLess(docker_heading, native_heading)
+        self.assertIn("docker compose up --build", self.readme)
+        self.assertIn("docker compose logs backend", self.readme)
+        self.assertIn("http://127.0.0.1:8000", self.readme)
+
+    def test_docker_workflow_documents_persistent_state_and_restarts(self):
+        for detail in (
+            "contextbubble-data",
+            "contextbubble-models",
+            "contextbubble.sqlite3-wal",
+            "contextbubble.sqlite3-shm",
+            "jobs.log",
+            "/data/media",
+            "contextbubble.token",
+            "fresh pairing code",
+        ):
+            self.assertIn(detail, self.readme)
+        self.assertRegex(self.readme, r"unexpired browser\s+session")
+        for command in (
+            "docker compose stop",
+            "docker compose start",
+            "docker compose restart",
+            "docker compose down",
+            "docker compose up",
+        ):
+            self.assertIn(command, self.readme)
+
+    def test_docker_workflow_warns_that_only_down_v_destroys_data(self):
+        self.assertRegex(
+            self.readme,
+            r"(?is)docker compose down`?.{0,300}preserve.{0,500}"
+            r"docker compose down -v`?.{0,100}(?:destructive|deletes)",
+        )
+        destructive = self.readme[self.readme.index("docker compose down -v") :]
+        for lost_state in (
+            "analyses",
+            "transcripts",
+            "logs",
+            "ASR resume files",
+            "generated token",
+            "model",
+        ):
+            self.assertIn(lost_state, destructive)
+        self.assertRegex(destructive, r"session\s+database")
+
+    def test_docker_workflow_documents_model_configuration_as_a_tuple(self):
+        self.assertIn("English-only", self.readme)
+        for setting in (
+            "WHISPER_MODEL",
+            "WHISPER_MODEL_URL",
+            "WHISPER_MODEL_SHA256",
+            "WHISPER_LANGUAGE",
+        ):
+            self.assertIn(setting, self.readme)
+        self.assertIn("zh", self.readme)
+        self.assertIn("auto", self.readme)
+        self.assertIn("WHISPER_NO_GPU", self.readme)
+        self.assertIn("-ng", self.readme)
+
+    def test_docker_workflow_documents_validation(self):
+        self.assertIn("scripts/check-compose.sh", self.readme)
+        self.assertIn("requires Docker Compose", self.readme)
 
 
 class DockerComposeContractTest(unittest.TestCase):

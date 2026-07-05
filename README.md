@@ -11,7 +11,92 @@ normalizes it once, transcribes overlapping local chunks through whisper.cpp,
 merges the transcript, then runs concept generation and review. Captions are
 logged in the Chrome Side Panel.
 
-## Requirements
+## Run Backend with Docker
+
+Docker is the recommended backend setup when the host does not already have
+Python, `ffmpeg`, `yt-dlp`, and whisper.cpp. On macOS and Windows, configure
+Docker Desktop to use Linux containers. From the repo root, run:
+
+```sh
+docker compose up --build
+```
+
+The first startup downloads the default English-only `ggml-base.en.bin` model
+into the `contextbubble-models` volume. Later starts reuse that download. Follow
+the backend output to find the admin token and short pairing code:
+
+```sh
+docker compose logs backend
+```
+
+The API is available only at `http://127.0.0.1:8000`; the Compose port binding
+does not expose it to the LAN.
+
+No `.env` file is needed because Compose supplies defaults. Compose reads a
+repo-root `.env` only for variable interpolation; it is not copied into the
+image because `.dockerignore` excludes it. To override defaults, first preserve
+any existing `.env`. Only when no `.env` exists, create one from the example:
+
+```sh
+cp .env.example .env
+```
+
+Then edit only the values that need overrides. `.env.example` documents these
+settings:
+
+- `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
+- `WHISPER_MODEL`, `WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and
+  `WHISPER_LANGUAGE`: model path, pinned download, integrity hash, and language.
+- `WHISPER_NO_GPU`: defaults to `1`. The image is CPU-only, and the backend
+  forwards whisper.cpp's `-ng` flag when this setting is enabled.
+- `AGENT_MODE`: `heuristic` (the no-provider default), `gemini`, or `ollama`.
+- `GEMINI_API_KEY` and `GEMINI_MODEL`: Gemini credentials and model selection.
+- `OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The default
+  `http://host.docker.internal:11434` reaches Ollama on the host; Compose adds
+  the Linux host-gateway mapping while Docker Desktop provides the same name.
+- `DEMO_VIDEO_IDS`: optional comma-separated fixture video IDs.
+
+The default Whisper model is English-only. For multilingual transcription, set
+all four model values as one coherent tuple: `WHISPER_MODEL`,
+`WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and `WHISPER_LANGUAGE`. The
+commented example in `.env.example` selects the multilingual base model with
+`WHISPER_LANGUAGE=zh`; use `WHISPER_LANGUAGE=auto` with the same multilingual
+model tuple for automatic language detection. Do not combine the English-only
+model URL or SHA with a multilingual model path.
+
+Compose keeps state in two named volumes:
+
+- `contextbubble-data` contains the SQLite database and its
+  `contextbubble.sqlite3-wal`/`contextbubble.sqlite3-shm` files, `jobs.log`,
+  retained ASR resume media under `/data/media`, the generated
+  `contextbubble.token`, and persisted session hashes in the database.
+- `contextbubble-models` contains the downloaded Whisper model.
+
+After a restart, the generated admin token is reused and an unexpired browser
+session remains valid. Each backend restart still prints a fresh pairing code.
+`docker compose stop`, `docker compose start`, `docker compose restart`,
+`docker compose down`, and `docker compose up` all preserve named volumes. A
+later `docker compose up` therefore reuses backend data and the downloaded
+model.
+
+**Destructive:** `docker compose down -v` deletes both named volumes, including
+analyses, transcripts, logs, ASR resume files, the generated token, the session
+database, and the model. The next start requires the model download and browser
+pairing again.
+
+YouTube caption files are temporary under `/tmp`. ASR audio is retained under
+`/data/media` while a job can resume, then successful jobs clean up that media.
+
+Validate both the default and example Compose configurations with:
+
+```sh
+scripts/check-compose.sh
+```
+
+This validation requires Docker Compose. It checks configuration rendering; it
+does not run the image or external YouTube/browser smoke tests.
+
+## Native Requirements
 
 - Python 3
 - Chromium, Chrome, or Brave
@@ -130,7 +215,7 @@ $HOME/tools/whisper.cpp/build/bin/whisper-cli
 $HOME/tools/whisper.cpp/models/ggml-base.en.bin
 ```
 
-## Run Backend
+## Run Backend Natively
 
 From the repo root:
 
