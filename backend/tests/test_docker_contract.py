@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
 REQUIREMENTS = ROOT / "requirements.txt"
+REQUIREMENTS_LOCK = ROOT / "requirements.lock"
 
 
 class DockerImageContractTest(unittest.TestCase):
@@ -35,9 +37,13 @@ class DockerImageContractTest(unittest.TestCase):
     def test_dockerfile_disables_native_cpu_tuning_with_portable_architectures(self):
         dockerfile = DOCKERFILE.read_text()
 
-        self.assertIn("-DGGML_NATIVE=OFF", dockerfile)
-        self.assertIn('arch="$(dpkg --print-architecture)"', dockerfile)
-        self.assertIn("-DGGML_CPU_ARM_ARCH=armv8-a", dockerfile)
+        architecture_detection = dockerfile.index('arch="$(dpkg --print-architecture)"')
+        cmake_invocation = dockerfile.index("&& cmake -S /src/whisper.cpp", architecture_detection)
+        cmake_build = dockerfile.index("&& cmake --build", cmake_invocation)
+        architecture_options = dockerfile[architecture_detection:cmake_invocation]
+        cmake_options = dockerfile[cmake_invocation:cmake_build]
+
+        self.assertIn("-DGGML_CPU_ARM_ARCH=armv8-a", architecture_options)
         for option in (
             "-DGGML_SSE42=OFF",
             "-DGGML_AVX=OFF",
@@ -46,8 +52,10 @@ class DockerImageContractTest(unittest.TestCase):
             "-DGGML_FMA=OFF",
             "-DGGML_F16C=OFF",
         ):
-            self.assertIn(option, dockerfile)
+            self.assertIn(option, architecture_options)
         self.assertIn("x86-64 baseline", dockerfile)
+        self.assertIn("-DGGML_NATIVE=OFF", cmake_options)
+        self.assertIn('"$@"', cmake_options)
 
     def test_dockerfile_installs_pinned_full_youtube_runtime(self):
         dockerfile = DOCKERFILE.read_text()
@@ -63,11 +71,29 @@ class DockerImageContractTest(unittest.TestCase):
         self.assertIn("fastapi==0.139.0", requirements)
         self.assertIn("uvicorn==0.50.0", requirements)
 
-    def test_base_tags_are_documented_as_patch_updateable(self):
+    def test_application_lock_pins_transitives_with_sha256_hashes(self):
+        self.assertTrue(REQUIREMENTS_LOCK.is_file(), "requirements.lock must exist")
+        lock = REQUIREMENTS_LOCK.read_text()
+
+        self.assertIn("fastapi==0.139.0", lock)
+        self.assertIn("uvicorn==0.50.0", lock)
+        self.assertRegex(lock, r"(?m)^#    uv \d+\.\d+\.\d+ pip compile .+$")
+        package_lines = [
+            line for line in lock.splitlines() if line and not line[0].isspace() and not line.startswith("#")
+        ]
+        self.assertGreater(len(package_lines), 2)
+        self.assertTrue(all("==" in line for line in package_lines))
+        package_blocks = re.split(r"(?m)(?=^[a-zA-Z0-9])", lock)[1:]
+        self.assertEqual(len(package_blocks), len(package_lines))
+        self.assertTrue(
+            all(re.search(r"(?m)^    --hash=sha256:[0-9a-f]{64}(?: \\)?$", block) for block in package_blocks)
+        )
+
+    def test_dockerfile_uses_supported_patch_updateable_base_tags(self):
         dockerfile = DOCKERFILE.read_text()
 
-        self.assertIn("intentionally patch-updatable", dockerfile)
-        self.assertIn("byte-identical rebuilds are out of scope", dockerfile)
+        self.assertIn("FROM debian:bookworm-slim AS whisper-builder", dockerfile)
+        self.assertIn("FROM python:3.12-slim-bookworm AS runtime", dockerfile)
 
     def test_dockerfile_defines_app_user_and_entrypoint(self):
         self.assertTrue(DOCKERFILE.is_file(), "Dockerfile must exist")
@@ -83,17 +109,36 @@ class DockerImageContractTest(unittest.TestCase):
     def test_dockerfile_copies_application_and_executables_to_runtime_paths(self):
         dockerfile = DOCKERFILE.read_text()
 
-        requirements_copy = dockerfile.index("COPY requirements.txt ./requirements.txt")
-        requirements_install = dockerfile.index(
-            "RUN python -m pip install --no-cache-dir --requirement requirements.txt"
+        lock_copy_instruction = "COPY requirements.lock ./requirements.lock"
+        lock_install_instruction = (
+            "RUN python -m pip install --no-cache-dir --require-hashes "
+            "-r requirements.lock"
         )
+        self.assertIn(lock_copy_instruction, dockerfile)
+        self.assertIn(lock_install_instruction, dockerfile)
+        requirements_copy = dockerfile.index("COPY requirements.txt ./requirements.txt")
+        lock_copy = dockerfile.index(lock_copy_instruction)
+        requirements_install = dockerfile.index(lock_install_instruction)
         backend_copy = dockerfile.index("COPY backend ./backend")
+        self.assertLess(requirements_copy, lock_copy)
+        self.assertLess(lock_copy, requirements_install)
         self.assertLess(requirements_copy, requirements_install)
         self.assertLess(requirements_install, backend_copy)
         self.assertIn(
             "COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli",
             dockerfile,
         )
+
+    def test_dockerfile_keeps_runtime_caches_in_writable_tmp(self):
+        dockerfile = DOCKERFILE.read_text()
+        env = dockerfile[dockerfile.index("ENV PYTHONUNBUFFERED=1") : dockerfile.index("EXPOSE 8000")]
+
+        self.assertIn("XDG_CACHE_HOME=/tmp/contextbubble/cache", env)
+        self.assertIn("DENO_DIR=/tmp/contextbubble/deno", env)
+        self.assertNotIn("XDG_CACHE_HOME=/app", env)
+        self.assertNotIn("DENO_DIR=/app", env)
+        self.assertNotIn("XDG_CACHE_HOME=/home/contextbubble", env)
+        self.assertNotIn("DENO_DIR=/home/contextbubble", env)
         self.assertIn(
             "COPY docker/bootstrap-model.sh /usr/local/bin/contextbubble-bootstrap-model",
             dockerfile,
@@ -121,6 +166,7 @@ class DockerImageContractTest(unittest.TestCase):
         expected_inclusions = {
             "!Dockerfile",
             "!requirements.txt",
+            "!requirements.lock",
             "!backend/",
             "!backend/**",
             "!docker/",

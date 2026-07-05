@@ -58,7 +58,8 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
-RUN python -m pip install --no-cache-dir --requirement requirements.txt
+COPY requirements.lock ./requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY backend ./backend
 COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli
@@ -78,7 +79,9 @@ RUN groupadd --gid 10001 contextbubble \
 
 ENV PYTHONUNBUFFERED=1 \
     HOME=/home/contextbubble \
-    TMPDIR=/tmp/contextbubble
+    TMPDIR=/tmp/contextbubble \
+    XDG_CACHE_HOME=/tmp/contextbubble/cache \
+    DENO_DIR=/tmp/contextbubble/deno
 
 EXPOSE 8000
 

@@ -2,6 +2,7 @@
 *
 !Dockerfile
 !requirements.txt
+!requirements.lock
 !backend/
 !backend/**
 !docker/
