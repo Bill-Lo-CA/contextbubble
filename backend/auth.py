@@ -107,15 +107,20 @@ def initialize_auth():
     return API_TOKEN
 
 
-def create_session_token():
+def _create_session_token_locked():
     token = secrets.token_urlsafe(32)
     expires_at = time.time() + SESSION_SECONDS
-    with AUTH_LOCK, closing(connect_db()) as conn, conn:
+    with closing(connect_db()) as conn, conn:
         conn.execute(
             "insert into session_tokens (token_hash, expires_at, created_at) values (?, ?, ?)",
             (token_hash(token), expires_at, now_iso()),
         )
     return token, expires_at
+
+
+def create_session_token():
+    with AUTH_LOCK:
+        return _create_session_token_locked()
 
 
 def valid_bearer_token(header):
@@ -128,13 +133,13 @@ def valid_bearer_token(header):
     if secrets.compare_digest(token, API_TOKEN):
         return True
     digest = token_hash(token)
-    with AUTH_LOCK, closing(connect_db()) as conn, conn:
-        _prune_sessions(conn)
+    now = time.time()
+    with closing(connect_db()) as conn:
         row = conn.execute(
             "select token_hash from session_tokens where token_hash = ? and expires_at > ?",
-            (digest, time.time()),
+            (digest, now),
         ).fetchone()
-        return row is not None and secrets.compare_digest(digest, row["token_hash"])
+    return row is not None and secrets.compare_digest(digest, row["token_hash"])
 def pair_session(pairing_code):
     global PAIRING_USED
     with AUTH_LOCK:
@@ -149,9 +154,10 @@ def pair_session(pairing_code):
         if not secrets.compare_digest(str(pairing_code), PAIRING_CODE):
             PAIRING_ATTEMPTS.append(now)
             raise PermissionError("invalid pairing code")
+        session = _create_session_token_locked()
         PAIRING_USED = True
         PAIRING_ATTEMPTS.clear()
-    return create_session_token()
+        return session
 def expired_pairing_rejected():
     global PAIRING_EXPIRES_AT, PAIRING_USED
     with AUTH_LOCK:
@@ -176,8 +182,7 @@ def reset_pairing_for_check():
         PAIRING_ATTEMPTS.clear()
 def active_session_token_hashes():
     try:
-        with AUTH_LOCK, closing(connect_db()) as conn, conn:
-            _prune_sessions(conn)
+        with closing(connect_db()) as conn:
             return [row["token_hash"] for row in conn.execute(
                 "select token_hash from session_tokens where expires_at > ?",
                 (time.time(),),

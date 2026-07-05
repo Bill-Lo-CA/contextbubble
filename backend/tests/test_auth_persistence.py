@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -20,6 +21,13 @@ from db import connect_db, init_db
 class AuthPersistenceTests(unittest.TestCase):
     def setUp(self):
         self.original_data_dir = config.DATA_DIR
+        self.original_auth_state = (
+            auth.API_TOKEN,
+            auth.PAIRING_CODE,
+            auth.PAIRING_EXPIRES_AT,
+            auth.PAIRING_USED,
+            list(auth.PAIRING_ATTEMPTS),
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         config.set_data_dir(self.tempdir.name)
         init_db()
@@ -28,6 +36,14 @@ class AuthPersistenceTests(unittest.TestCase):
         conn.close()
 
     def tearDown(self):
+        (
+            auth.API_TOKEN,
+            auth.PAIRING_CODE,
+            auth.PAIRING_EXPIRES_AT,
+            auth.PAIRING_USED,
+            attempts,
+        ) = self.original_auth_state
+        auth.PAIRING_ATTEMPTS[:] = attempts
         config.set_data_dir(self.original_data_dir)
         self.tempdir.cleanup()
 
@@ -52,6 +68,18 @@ class AuthPersistenceTests(unittest.TestCase):
 
         self.assertEqual(auth.API_TOKEN, configured_token)
         self.assertFalse(Path(self.tempdir.name, "contextbubble.token").exists())
+
+    def test_explicit_admin_token_does_not_overwrite_generated_token_file(self):
+        token_file = Path(self.tempdir.name, "contextbubble.token")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            auth.initialize_auth()
+        generated_token = token_file.read_text(encoding="utf-8")
+
+        with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_TOKEN": "configured-token"}, clear=True):
+            auth.initialize_auth()
+
+        self.assertEqual(auth.API_TOKEN, "configured-token")
+        self.assertEqual(token_file.read_text(encoding="utf-8"), generated_token)
 
     def test_empty_admin_token_setting_generates_persisted_token(self):
         with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_TOKEN": "   "}, clear=True):
@@ -93,6 +121,44 @@ class AuthPersistenceTests(unittest.TestCase):
             count = conn.execute("select count(*) from session_tokens").fetchone()[0]
         conn.close()
         self.assertEqual(count, 0)
+
+    def test_failed_session_insert_leaves_pairing_code_usable(self):
+        with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_TOKEN": "admin-token"}, clear=True):
+            auth.initialize_auth()
+        pairing_code = auth.PAIRING_CODE
+        with connect_db() as conn:
+            conn.execute("""
+                create trigger fail_session_insert before insert on session_tokens
+                begin
+                    select raise(abort, 'forced session insert failure');
+                end
+            """)
+        conn.close()
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "forced session insert failure"):
+            auth.pair_session(pairing_code)
+
+        self.assertFalse(auth.PAIRING_USED)
+        with connect_db() as conn:
+            conn.execute("drop trigger fail_session_insert")
+        conn.close()
+        session_token, _ = auth.pair_session(pairing_code)
+        self.assertTrue(auth.valid_bearer_token(f"Bearer {session_token}"))
+
+    def test_session_validation_is_read_only(self):
+        with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_TOKEN": "admin-token"}, clear=True):
+            auth.initialize_auth()
+        session_token, _ = auth.create_session_token()
+        database_actions = []
+        validation_conn = connect_db()
+        validation_conn.set_authorizer(
+            lambda action, *_: database_actions.append(action) or sqlite3.SQLITE_OK
+        )
+
+        with mock.patch.object(auth, "connect_db", return_value=validation_conn):
+            self.assertTrue(auth.valid_bearer_token(f"Bearer {session_token}"))
+
+        self.assertNotIn(sqlite3.SQLITE_DELETE, database_actions)
 
 
 if __name__ == "__main__":
