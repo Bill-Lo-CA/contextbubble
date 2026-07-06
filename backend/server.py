@@ -42,7 +42,6 @@ async def lifespan(_app):
         validate_runtime_for_asr()
     resume_preparations()
     print(f"ContextBubble backend on http://{BACKEND_HOST}:{BACKEND_PORT}")
-    print(f"ContextBubble API token: {auth.API_TOKEN}")
     print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
     yield
 

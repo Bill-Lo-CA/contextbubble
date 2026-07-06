@@ -188,6 +188,7 @@ class RuntimeConfigTests(unittest.TestCase):
                         "initialize_auth",
                         side_effect=lambda: events.append("auth"),
                     ),
+                    mock.patch.object(server.auth, "API_TOKEN", "secret-api-token"),
                     mock.patch.object(
                         server,
                         "validate_runtime_for_asr",
@@ -198,7 +199,7 @@ class RuntimeConfigTests(unittest.TestCase):
                         "resume_preparations",
                         side_effect=lambda: events.append("resume"),
                     ),
-                    mock.patch("builtins.print"),
+                    mock.patch("builtins.print") as print_output,
                 ):
                     run_lifespan(server)
 
@@ -206,6 +207,12 @@ class RuntimeConfigTests(unittest.TestCase):
                 events,
                 ["config", "database", "auth", "validate", "resume"],
             )
+            output = " ".join(
+                str(argument)
+                for call in print_output.call_args_list
+                for argument in call.args
+            )
+            self.assertNotIn("secret-api-token", output)
         finally:
             sys.modules.pop("server", None)
 
