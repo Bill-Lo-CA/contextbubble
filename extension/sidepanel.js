@@ -1,5 +1,6 @@
 const BY_VIDEO_KEY = "contextbubbleByVideo";
 const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
+const OWNER_KEY = "contextbubbleAnalysisOwner";
 const captions = document.getElementById("captions");
 let activeVideoId = "";
 let debugInfo = {};
@@ -66,6 +67,11 @@ function renderSentences(entries = [], { autoScroll = false } = {}) {
       failed.className = "debug";
       failed.textContent = "Translation failed.";
       item.append(failed);
+    } else if (entry.translation_status === "skipped") {
+      const skipped = document.createElement("div");
+      skipped.className = "debug";
+      skipped.textContent = "Translation skipped.";
+      item.append(skipped);
     }
     if (entry.source_segment_ids?.length) {
       const debug = document.createElement("details");
@@ -100,7 +106,7 @@ function renderCaptions(log = []) {
 function renderSaved(saved) {
   const byVideo = saved[BY_VIDEO_KEY] || {};
   const keys = Object.keys(byVideo);
-  const stateInfo = stateToRender(byVideo);
+  const stateInfo = stateToRender(byVideo, saved[OWNER_KEY]);
   const state = stateInfo.state;
   debugInfo = {
     storedKeys: keys,
@@ -129,23 +135,22 @@ function renderSaved(saved) {
   renderCaptions([]);
 }
 
-function stateToRender(byVideo) {
-  if (byVideo[activeVideoId]) return { key: activeVideoId, state: byVideo[activeVideoId] };
-  const latest = Object.entries(byVideo).sort((left, right) => {
-    return (right[1].updatedAt || 0) - (left[1].updatedAt || 0);
-  })[0];
-  return latest ? { key: latest[0], state: latest[1] } : { key: "", state: {} };
+function stateToRender(byVideo, owner) {
+  const ownerVideoId = owner?.videoId || "";
+  if (!ownerVideoId) return { key: "", state: {} };
+  return { key: ownerVideoId, state: byVideo[ownerVideoId] || {} };
 }
 
 async function refreshActiveVideo() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const saved = await chrome.storage.local.get([BY_VIDEO_KEY, ACTIVE_VIDEO_KEY]);
+  const saved = await chrome.storage.local.get([BY_VIDEO_KEY, ACTIVE_VIDEO_KEY, OWNER_KEY]);
   const tabVideoId = getVideoId(tab?.url || "");
-  activeVideoId = tabVideoId || saved[ACTIVE_VIDEO_KEY] || "";
+  activeVideoId = saved[OWNER_KEY]?.videoId || "";
   debugInfo = {
     storedKeys: Object.keys(saved[BY_VIDEO_KEY] || {}),
     tabVideoId,
     storedActiveVideoId: saved[ACTIVE_VIDEO_KEY] || "",
+    owner: saved[OWNER_KEY] || null,
     activeVideoId,
   };
   console.log("[ContextBubble SidePanel:init]", debugInfo);
@@ -162,9 +167,9 @@ chrome.tabs.onUpdated?.addListener((_tabId, changeInfo) => {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes[BY_VIDEO_KEY]) {
-    chrome.storage.local.get(BY_VIDEO_KEY, renderSaved);
+    chrome.storage.local.get([BY_VIDEO_KEY, OWNER_KEY], renderSaved);
   }
-  if (changes[ACTIVE_VIDEO_KEY]) {
+  if (changes[ACTIVE_VIDEO_KEY] || changes[OWNER_KEY]) {
     refreshActiveVideo();
   }
 });

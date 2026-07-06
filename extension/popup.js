@@ -102,6 +102,7 @@ async function sendAnalyzeMessage(tabId, videoId, forceRefresh = false) {
   const token = await sessionToken();
   const message = {
     type: "contextbubble:analyze-v2",
+    tabId,
     videoId,
     sessionToken: token,
     demoMode: demoMode.checked,
@@ -223,10 +224,6 @@ async function runAnalyze(forceRefresh = false) {
     const { error, response } = await analyzeTab(tab.id, videoId, forceRefresh);
     if (response?.status === "already-running") {
       setStatus("Analysis is already running.");
-      return;
-    }
-    if (response?.status === "stale-result-discarded") {
-      setStatus("Analysis finished, but the page changed. Result discarded.");
       return;
     }
     if (response?.status === "analysis-finished-background") {

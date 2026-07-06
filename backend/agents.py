@@ -184,6 +184,8 @@ def load_latest_translation_cache(segment_id, target_language, provider, model):
         ).fetchone()
     return dict(row) if row else None
 def save_translation_cache(cache_key, segment_id, source_hash, context_hash, target_language, provider, model, result):
+    if result.get("status") == "skipped" and result.get("decision") != "skip":
+        return
     timestamp = now_iso()
     with connect_db() as conn:
         conn.execute(
@@ -232,8 +234,10 @@ def translation_decision(segment_id, source_text, context_before="", context_aft
         return {**metadata, "cache_key": cache_key, "decision": "retranslate", "reason": "Force refresh requested.", "cached": latest}
     if cached and cached.get("status") == "translated" and float(cached.get("confidence") or 0) >= 0.75:
         return {**metadata, "cache_key": cache_key, "decision": "use_cache", "reason": "Source, context, target language, model, and prompt version are unchanged.", "cached": cached}
-    if cached and cached.get("status") == "skipped":
+    if cached and cached.get("status") == "skipped" and cached.get("decision") == "skip":
         return {**metadata, "cache_key": cache_key, "decision": "use_cache", "reason": "Cached skipped translation is still current.", "cached": cached}
+    if cached and cached.get("status") == "skipped":
+        return {**metadata, "cache_key": cache_key, "decision": "retranslate", "reason": "Cached skipped translation is retryable.", "cached": cached}
     if cached:
         return {**metadata, "cache_key": cache_key, "decision": "review", "reason": "Cached translation needs review.", "cached": cached}
     if latest:
