@@ -1,10 +1,11 @@
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 import tempfile
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_video_id
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
@@ -32,7 +33,20 @@ from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app):
+    validate_config()
+    init_db()
+    auth.initialize_auth()
+    if VALIDATE_ASR_ON_START:
+        validate_runtime_for_asr()
+    resume_preparations()
+    print(f"ContextBubble backend on http://{BACKEND_HOST}:{BACKEND_PORT}")
+    print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def json_response(payload, status=200):
@@ -361,12 +375,7 @@ async def analysis(analysis_id: str, authorization: str = Header("")):
 
 
 def main():
-    validate_config()
-    init_db()
-    resume_preparations()
-    print("ContextBubble backend on http://127.0.0.1:8000")
-    print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT)
 
 
 if __name__ == "__main__":

@@ -3,9 +3,9 @@ from pathlib import Path
 import time
 
 from agents import *
-from auth import *
+import auth
 from config import *
-from db import init_db
+from db import connect_db, init_db
 from jobs import update_job
 from media import *
 from transcript_quality import *
@@ -13,36 +13,39 @@ from transcripts import *
 
 
 def self_check_auth():
-    reset_pairing_for_check()
-    token, expires_at = pair_session(PAIRING_CODE)
+    with connect_db() as conn:
+        conn.execute("delete from session_tokens")
+    auth.initialize_auth()
+    auth.reset_pairing_for_check()
+    token, expires_at = auth.pair_session(auth.PAIRING_CODE)
     assert token
     assert expires_at > time.time()
-    assert valid_bearer_token(f"Bearer {token}")
-    assert not valid_bearer_token("Bearer " + ("x" * (MAX_BEARER_TOKEN_BYTES + 1)))
+    assert auth.valid_bearer_token(f"Bearer {token}")
+    assert not auth.valid_bearer_token("Bearer " + ("x" * (MAX_BEARER_TOKEN_BYTES + 1)))
     try:
-        pair_session(PAIRING_CODE)
+        auth.pair_session(auth.PAIRING_CODE)
         raise AssertionError("used pairing code accepted")
     except ValueError:
         pass
-    reset_pairing_for_check()
+    auth.reset_pairing_for_check()
     try:
-        pair_session("000000" if PAIRING_CODE != "000000" else "000001")
+        auth.pair_session("000000" if auth.PAIRING_CODE != "000000" else "000001")
         raise AssertionError("wrong pairing code accepted")
     except PermissionError:
         pass
     try:
-        for _ in range(PAIRING_LIMIT):
+        for _ in range(auth.PAIRING_LIMIT):
             try:
-                pair_session("000000" if PAIRING_CODE != "000000" else "000001")
+                auth.pair_session("000000" if auth.PAIRING_CODE != "000000" else "000001")
             except PermissionError:
                 pass
-        pair_session("000000" if PAIRING_CODE != "000000" else "000001")
+        auth.pair_session("000000" if auth.PAIRING_CODE != "000000" else "000001")
         raise AssertionError("pairing rate limit did not trigger")
     except RuntimeError:
         pass
-    reset_pairing_for_check()
-    assert expired_pairing_rejected()
-    reset_pairing_for_check()
+    auth.reset_pairing_for_check()
+    assert auth.expired_pairing_rejected()
+    auth.reset_pairing_for_check()
 
 
 def self_check_subtitles():
@@ -228,10 +231,10 @@ def self_check_analysis_and_storage():
 
 
 def self_check_security_helpers():
-    secret = f"{API_TOKEN} {PAIRING_CODE} key={GEMINI_API_KEY or 'demo'}"
-    redacted = redact_secret_text(secret)
-    assert API_TOKEN not in redacted
-    assert PAIRING_CODE not in redacted
+    secret = f"{auth.API_TOKEN} {auth.PAIRING_CODE} key={GEMINI_API_KEY or 'demo'}"
+    redacted = auth.redact_secret_text(secret)
+    assert auth.API_TOKEN not in redacted
+    assert auth.PAIRING_CODE not in redacted
     assert "key=[redacted]" in redacted
     try:
         update_job("missing", not_a_column=True)

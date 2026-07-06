@@ -128,8 +128,9 @@ python -m pip install -r requirements.txt
 python backend/server.py
 ```
 
-The backend listens on `127.0.0.1` and prints an admin bearer token plus a
-short pairing code:
+The backend listens on `127.0.0.1` and prints a short pairing code. A generated
+admin bearer token is stored privately at
+`backend/.contextbubble/contextbubble.token` instead of being written to logs:
 
 ```text
 http://127.0.0.1:8000
@@ -174,12 +175,13 @@ rendering in `extension/contentOverlay.js`.
 
 ## Local Auth Model
 
-The backend is a local-dev service bound to `127.0.0.1`. It prints an admin
-bearer token and a one-use pairing code to the terminal at startup. The popup
-uses six single-digit inputs for the pairing code. If the code expires, the
-popup can request a new code; the backend prints that code to the terminal and
-does not return it to the browser. The extension stores only the resulting
-session token in `chrome.storage.session`.
+The backend is a local-dev service bound to `127.0.0.1`. It loads the admin
+bearer token from `CONTEXTBUBBLE_TOKEN` or a private generated token file, and
+does not print that token. It prints a one-use pairing code to the terminal at
+startup. The popup uses six single-digit inputs for the pairing code. If the
+code expires, the popup can request a new code; the backend prints that code to
+the terminal and does not return it to the browser. The extension stores only
+the resulting session token in `chrome.storage.session`.
 
 This is prototype local auth, not production auth. CORS is intentionally narrow:
 pairing is for extension origins, and protected routes still require an admin or
