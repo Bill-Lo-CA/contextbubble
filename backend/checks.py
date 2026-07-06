@@ -107,6 +107,8 @@ def self_check_media_helpers():
     assert "ollama" in AGENT_MODES
     assert TRANSLATION_MODE == "ollama"
     assert TRANSLATION_MODEL == "qwen3:8b"
+    assert TRANSCRIPT_BLOCK_SPLITTER_MODE == "ollama"
+    assert TRANSCRIPT_BLOCK_SPLITTER_MODEL == "llama3.2:3b"
 
 
 def self_check_sentence_qc():

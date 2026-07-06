@@ -3,6 +3,8 @@ const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
 const captions = document.getElementById("captions");
 let activeVideoId = "";
 let debugInfo = {};
+let renderedSentenceCount = 0;
+let renderedSentenceVideoId = "";
 
 function getVideoId(url) {
   try {
@@ -21,6 +23,13 @@ function formatTime(seconds) {
 
 function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function lastCaptionVisible() {
+  const last = captions.querySelector(".caption:last-child");
+  if (!last) return false;
+  const rect = last.getBoundingClientRect();
+  return rect.top < window.innerHeight && rect.bottom > 0;
 }
 
 function renderSentences(entries = [], { autoScroll = false } = {}) {
@@ -103,9 +112,16 @@ function renderSaved(saved) {
   console.log("[ContextBubble SidePanel]", debugInfo);
   const sentences = state.shownSentenceEntries || [];
   if (sentences.length) {
-    renderSentences(sentences);
+    const selectedVideoId = stateInfo.key || activeVideoId;
+    const sameVideo = selectedVideoId === renderedSentenceVideoId;
+    const shouldScroll = sameVideo && sentences.length > renderedSentenceCount && lastCaptionVisible();
+    renderSentences(sentences, { autoScroll: shouldScroll });
+    renderedSentenceCount = sentences.length;
+    renderedSentenceVideoId = selectedVideoId;
     return;
   }
+  renderedSentenceCount = 0;
+  renderedSentenceVideoId = "";
   if (state.captionLog?.length) {
     renderCaptions(state.captionLog);
     return;

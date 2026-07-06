@@ -24,6 +24,8 @@
   let authToken = "";
   let storageQueue = Promise.resolve();
   let translationRequests = new Set();
+  let contextInvalidated = false;
+  let tickTimer;
 
   function getVideoId() {
     return new URLSearchParams(location.search).get("v") || "";
@@ -57,7 +59,7 @@
     return `${hours}:${minutes}:${secs}`;
   }
 
-  function appendCaptionLog(text, currentTime, segment, isFallback = false) {
+  function appendCaptionLog(videoId, text, currentTime, segment, isFallback = false) {
     text = normalizeText(text);
     if (!text) {
       lastCaptionText = "";
@@ -82,7 +84,7 @@
 
     if (captionKey !== lastCaptionText) {
       lastCaptionText = captionKey;
-      updateVideoState(getVideoId(), (state) => {
+      updateVideoState(videoId, (state) => {
         const log = state.captionLog || [];
         const index = log.findIndex((entry) => entry.id === id);
         const entry = {
@@ -103,11 +105,11 @@
         }
         state.captionLog = log.slice(-MAX_CAPTIONS);
       });
-      if (segment?.id) requestTranslation(segment, text);
+      if (segment?.id) requestTranslation(videoId, segment, text);
     }
   }
 
-  async function requestTranslation(segment, sourceText) {
+  async function requestTranslation(videoId, segment, sourceText) {
     const requestKey = `${segment.id}:${normalizeText(sourceText)}`;
     if (translationRequests.has(requestKey) || !authToken) return;
     translationRequests.add(requestKey);
@@ -122,9 +124,9 @@
           target_language: "zh-TW",
         }),
       });
-      await updateCaptionTranslation(getVideoId(), result);
+      await updateCaptionTranslation(videoId, result);
     } catch (error) {
-      await updateCaptionTranslation(getVideoId(), {
+      await updateCaptionTranslation(videoId, {
         id: segment.id,
         status: "failed",
         translated_text: "",
@@ -133,11 +135,11 @@
     }
   }
 
-  async function requestSentenceTranslation(entry) {
+  async function requestSentenceTranslation(videoId, entry) {
     const requestKey = `${entry.id}:${normalizeText(entry.text)}`;
     if (translationRequests.has(requestKey) || !authToken) return;
     translationRequests.add(requestKey);
-    await updateSentenceTranslation(getVideoId(), {
+    await updateSentenceTranslation(videoId, {
       id: entry.id,
       status: "pending",
       translated_text: "",
@@ -154,9 +156,9 @@
           target_language: "zh-TW",
         }),
       });
-      await updateSentenceTranslation(getVideoId(), result);
+      await updateSentenceTranslation(videoId, result);
     } catch (error) {
-      await updateSentenceTranslation(getVideoId(), {
+      await updateSentenceTranslation(videoId, {
         id: entry.id,
         status: "failed",
         translated_text: "",
@@ -206,9 +208,9 @@
     });
   }
 
-  function showSentenceEntry(entry) {
+  function showSentenceEntry(videoId, entry) {
     if (!entry) return Promise.resolve();
-    return updateVideoState(getVideoId(), (state) => {
+    return updateVideoState(videoId, (state) => {
       const entries = state.shownSentenceEntries || [];
       const existing = entries.find((item) => item.id === entry.id);
       const next = {
@@ -239,27 +241,51 @@
     });
   }
 
+  function stopIfContextInvalidated(error) {
+    const message = String(error?.message || error || "");
+    if (!message.includes("Extension context invalidated")) return false;
+    contextInvalidated = true;
+    if (tickTimer) clearInterval(tickTimer);
+    return true;
+  }
+
   function updateVideoState(videoId, mutate) {
-    if (!videoId) return Promise.resolve();
+    if (!videoId || contextInvalidated) return Promise.resolve();
     storageQueue = storageQueue.then(() => new Promise((resolve) => {
-      chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
-        const byVideo = saved[BY_VIDEO_KEY] || {};
-        const state = byVideo[videoId] || {};
-        mutate(state);
-        state.updatedAt = Date.now();
-        byVideo[videoId] = state;
-        chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo }, resolve);
-      });
+      try {
+        chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+          try {
+            const byVideo = saved[BY_VIDEO_KEY] || {};
+            const state = byVideo[videoId] || {};
+            mutate(state);
+            state.updatedAt = Date.now();
+            byVideo[videoId] = state;
+            chrome.storage.local.set({ [BY_VIDEO_KEY]: byVideo }, resolve);
+          } catch (error) {
+            stopIfContextInvalidated(error);
+            resolve();
+          }
+        });
+      } catch (error) {
+        stopIfContextInvalidated(error);
+        resolve();
+      }
     }));
     storageQueue = storageQueue.catch((error) => {
-      console.warn("[ContextBubble] storage update failed", error);
+      if (!stopIfContextInvalidated(error)) {
+        console.warn("[ContextBubble] storage update failed", error);
+      }
     });
     return storageQueue;
   }
 
   function setActiveVideo(videoId) {
-    if (!videoId) return;
-    chrome.storage.local.set({ [ACTIVE_VIDEO_KEY]: videoId });
+    if (!videoId || contextInvalidated) return;
+    try {
+      chrome.storage.local.set({ [ACTIVE_VIDEO_KEY]: videoId });
+    } catch (error) {
+      stopIfContextInvalidated(error);
+    }
   }
 
   function resetTimelineDisplay(videoId, status = "") {
@@ -293,17 +319,25 @@
   }
 
   function appendSentenceEntries(entries) {
-    sentenceEntries = entries
+    sentenceEntries = normalizedSentenceEntries(entries);
+  }
+
+  function normalizedSentenceEntries(entries) {
+    return entries
       .map((entry) => ({ ...entry, text: normalizeText(entry.text) }))
       .sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
   function restoreSentenceEntries(videoId) {
-    if (sentenceEntries.length || !videoId) return;
-    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
-      const entries = saved[BY_VIDEO_KEY]?.[videoId]?.allSentenceEntries || [];
-      if (entries.length && !sentenceEntries.length) appendSentenceEntries(entries);
-    });
+    if (sentenceEntries.length || !videoId || contextInvalidated) return;
+    try {
+      chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+        const entries = saved[BY_VIDEO_KEY]?.[videoId]?.allSentenceEntries || [];
+        if (entries.length && !sentenceEntries.length) appendSentenceEntries(entries);
+      });
+    } catch (error) {
+      stopIfContextInvalidated(error);
+    }
   }
 
   function appendBubbles(nextBubbles) {
@@ -331,8 +365,8 @@
     return globalThis.contextbubbleBackend.fetchJson(path, { ...options, headers: authHeaders() });
   }
 
-  function setSharedStatus(text) {
-    updateVideoState(getVideoId(), (state) => {
+  function setSharedStatus(videoId, text) {
+    updateVideoState(videoId, (state) => {
       state.status = text;
     });
   }
@@ -368,16 +402,23 @@
     });
   }
 
-  async function pollPreparation(job) {
+  function pageStillMatches(videoId, currentVideo, requestGeneration) {
+    return getVideoId() === videoId && findVideo() === currentVideo && pageGeneration === requestGeneration;
+  }
+
+  async function pollPreparation(videoId, job, currentVideo, requestGeneration) {
     let lastUpdated = job.updated_at || "";
     let lastMove = Date.now();
     while (true) {
-      setSharedStatus(stageText(job));
-      appendTranscriptSegments(job.segments || []);
-      appendSentenceEntries(job.sentence_entries || []);
-      if (sentenceEntries.length) {
-        await updateVideoState(getVideoId(), (state) => {
-          state.allSentenceEntries = sentenceEntries;
+      const entries = normalizedSentenceEntries(job.sentence_entries || []);
+      setSharedStatus(videoId, stageText(job));
+      if (pageStillMatches(videoId, currentVideo, requestGeneration)) {
+        appendTranscriptSegments(job.segments || []);
+        appendSentenceEntries(entries);
+      }
+      if (entries.length) {
+        await updateVideoState(videoId, (state) => {
+          state.allSentenceEntries = entries;
           state.transcriptSource = job.transcript_source;
         });
       }
@@ -424,15 +465,23 @@
     resetTimelineDisplay(videoId);
   }
 
-  async function startAnalysis({ learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
+  async function startAnalysis({ videoId: requestedVideoId, learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
     if (analysisRunning) return { status: "already-running" };
     analysisRunning = true;
     authToken = sessionToken || "";
 
-    const videoId = getVideoId();
+    const videoId = requestedVideoId || "";
+    const currentPageVideoId = getVideoId();
     const currentVideo = findVideo();
     try {
       if (!videoId) throw new Error("Open a YouTube watch page first.");
+      if (videoId !== currentPageVideoId) {
+        return {
+          status: "active-video-changed",
+          error: "The active video changed before analysis started. Please click Analyze again.",
+          videoId,
+        };
+      }
       if (!currentVideo) throw new Error("No YouTube video element found.");
       if (!authToken) throw new Error("Pair the backend first.");
       enterVideo(videoId, currentVideo);
@@ -440,12 +489,29 @@
       const requestGeneration = pageGeneration;
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
-      job = await pollPreparation(job);
+      job = await pollPreparation(videoId, job, currentVideo, requestGeneration);
       job = await fetchJson(`/api/preparations/${job.job_id}?include_transcript=true&include_sentence_entries=true`);
-      if (getVideoId() !== videoId || findVideo() !== currentVideo || pageGeneration !== requestGeneration) {
-        setSharedStatus("Analysis finished, but the page changed. Result discarded.");
-        return { status: "stale-result-discarded", videoId };
+      const finalSentenceEntries = normalizedSentenceEntries(job.sentence_entries || []);
+      await updateVideoState(videoId, (state) => {
+        state.jobId = job.job_id;
+        state.status = "Ready.";
+        state.captionLog = state.captionLog || [];
+        state.allSentenceEntries = finalSentenceEntries;
+        state.transcriptSource = job.transcript_source;
+      });
+      const response = {
+        videoId,
+        count: (job.bubbles || []).length,
+        segmentCount: (job.segments || []).length,
+        sentenceCount: finalSentenceEntries.length,
+        transcriptSource: job.transcript_source,
+        jobId: job.job_id,
+        analysisId: job.analysis_id,
+      };
+      if (!pageStillMatches(videoId, currentVideo, requestGeneration)) {
+        return { ...response, status: "analysis-finished-background" };
       }
+
       transcriptSegments = [];
       sentenceEntries = [];
       bubbles = [];
@@ -455,25 +521,10 @@
       lastFallbackCaptionAt = 0;
       overlay.clear();
       appendTranscriptSegments(job.segments || []);
-      appendSentenceEntries(job.sentence_entries || []);
+      appendSentenceEntries(finalSentenceEntries);
       appendBubbles(job.bubbles || []);
-      await updateVideoState(videoId, (state) => {
-        state.jobId = job.job_id;
-        state.status = "Ready.";
-        state.captionLog = state.captionLog || [];
-        state.allSentenceEntries = sentenceEntries;
-        state.transcriptSource = job.transcript_source;
-      });
 
-      return {
-        videoId,
-        count: bubbles.length,
-        segmentCount: transcriptSegments.length,
-        sentenceCount: sentenceEntries.length,
-        transcriptSource: job.transcript_source,
-        jobId: job.job_id,
-        analysisId: job.analysis_id,
-      };
+      return response;
     } finally {
       analysisRunning = false;
     }
@@ -503,7 +554,7 @@
       return currentVideo.currentTime >= entry.start_seconds && currentVideo.currentTime <= entry.end_seconds;
     });
     if (activeSentence) {
-      showSentenceEntry(activeSentence).then(() => requestSentenceTranslation(activeSentence));
+      showSentenceEntry(videoId, activeSentence).then(() => requestSentenceTranslation(videoId, activeSentence));
     }
 
     const visibleCaptionText = readCaptionText();
@@ -511,7 +562,7 @@
       return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
     });
     if (!sentenceEntries.length) {
-      appendCaptionLog(visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
+      appendCaptionLog(videoId, visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
     }
 
     for (const bubble of bubbles) {
@@ -544,7 +595,7 @@
   }
 
   chrome.runtime.onMessage.addListener(handleMessage);
-  const tickTimer = setInterval(tick, 500);
+  tickTimer = setInterval(tick, 500);
   globalThis.__contextbubbleCleanup = () => {
     clearInterval(tickTimer);
     if (trackedVideo) trackedVideo.removeEventListener("seeking", overlay.clear);

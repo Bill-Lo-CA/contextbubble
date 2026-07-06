@@ -5,13 +5,13 @@ import shutil
 import threading
 import time
 
-from agents import analysis_result, run_analysis_for_transcript
+from agents import analysis_result, run_analysis_for_transcript, semantic_sentence_entries
 from auth import redact_secret_text
 from config import *
 from db import connect_db
 from media import ExternalCommandError, command_error, create_chunks, download_full_audio, fetch_youtube_subtitles, get_youtube_duration, media_duration, merge_transcript_segments, normalize_audio, transcribe_audio_chunk
 from transcript_quality import asr_tools_available, caption_source_qc, route_transcript_source
-from transcripts import load_transcript, sentence_entries, store_transcript
+from transcripts import load_transcript, store_transcript
 
 
 STATE_LOCK = threading.Lock()
@@ -129,7 +129,7 @@ def job_payload(job_id, include_ready=True, include_transcript=False, include_se
     if include_transcript and segments:
         payload["segments"] = segments
     if include_sentence_entries and segments:
-        payload["sentence_entries"] = sentence_entries(segments)
+        payload["sentence_entries"] = semantic_sentence_entries(segments)
     if include_ready and payload["status"] == "ready":
         analysis = analysis_result(payload["analysis_id"])
         payload["bubbles"] = analysis["bubbles"] if analysis else []

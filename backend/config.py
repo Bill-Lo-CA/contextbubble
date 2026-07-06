@@ -29,6 +29,8 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 AGENT_MODE = os.environ.get("AGENT_MODE", "heuristic").lower()
 TRANSLATION_MODE = os.environ.get("TRANSLATION_MODE", "ollama").lower()
 TRANSLATION_MODEL = os.environ.get("TRANSLATION_MODEL", "qwen3:8b")
+TRANSCRIPT_BLOCK_SPLITTER_MODE = os.environ.get("TRANSCRIPT_BLOCK_SPLITTER_MODE", "ollama").lower()
+TRANSCRIPT_BLOCK_SPLITTER_MODEL = os.environ.get("TRANSCRIPT_BLOCK_SPLITTER_MODEL", "llama3.2:3b")
 DEMO_VIDEO_IDS = {item.strip() for item in os.environ.get("DEMO_VIDEO_IDS", "").split(",") if item.strip()}
 DEMO_FIXTURES = {
     "fNk_zzaMoSs": "fNk_zzaMoSs.vtt",
@@ -36,7 +38,9 @@ DEMO_FIXTURES = {
 LEARNER_LEVELS = {"beginner", "intermediate", "advanced"}
 AGENT_MODES = {"heuristic", "gemini", "ollama"}
 TRANSLATION_MODES = {"gemini", "ollama"}
+TRANSCRIPT_BLOCK_SPLITTER_MODES = {"heuristic", "gemini", "ollama"}
 TRANSLATION_PROMPT_VERSION = "translation-v2"
+TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION = "block-splitter-v1"
 DEFAULT_CHUNK_SECONDS = 30
 CHUNK_OVERLAP_SECONDS = 2
 MAX_SUBTITLE_BYTES = 5 * 1024 * 1024
@@ -66,6 +70,8 @@ def validate_config():
         raise ValueError(f"AGENT_MODE must be one of: {', '.join(sorted(AGENT_MODES))}")
     if TRANSLATION_MODE not in TRANSLATION_MODES:
         raise ValueError(f"TRANSLATION_MODE must be one of: {', '.join(sorted(TRANSLATION_MODES))}")
+    if TRANSCRIPT_BLOCK_SPLITTER_MODE not in TRANSCRIPT_BLOCK_SPLITTER_MODES:
+        raise ValueError(f"TRANSCRIPT_BLOCK_SPLITTER_MODE must be one of: {', '.join(sorted(TRANSCRIPT_BLOCK_SPLITTER_MODES))}")
 def validate_runtime_for_asr():
     if not shutil.which(YTDLP_CMD) and not Path(YTDLP_CMD).exists():
         raise FileNotFoundError("YTDLP_AUDIO_FAILED")

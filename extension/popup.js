@@ -75,16 +75,14 @@ async function checkBackendConnection() {
   });
 }
 
-async function sendAnalyzeMessage(tabId, forceRefresh = false) {
-  const token = await sessionToken();
-  const message = {
-    type: "contextbubble:analyze-v2",
-    sessionToken: token,
-    demoMode: demoMode.checked,
-    learnerLevel: learnerLevel.value,
-    forceRefresh,
-  };
+function contentScriptUnavailable(error) {
+  return error && (
+    error.includes("Receiving end does not exist")
+    || error.includes("Could not establish connection")
+  );
+}
 
+function sendMessage(tabId, message) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       const error = chrome.runtime.lastError?.message;
@@ -93,8 +91,41 @@ async function sendAnalyzeMessage(tabId, forceRefresh = false) {
   });
 }
 
-async function analyzeTab(tabId, forceRefresh = false) {
-  return sendAnalyzeMessage(tabId, forceRefresh);
+async function injectContentScript(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["backendClient.js", "contentOverlay.js", "content.js"],
+  });
+}
+
+async function sendAnalyzeMessage(tabId, videoId, forceRefresh = false) {
+  const token = await sessionToken();
+  const message = {
+    type: "contextbubble:analyze-v2",
+    videoId,
+    sessionToken: token,
+    demoMode: demoMode.checked,
+    learnerLevel: learnerLevel.value,
+    forceRefresh,
+  };
+
+  let result = await sendMessage(tabId, message);
+  if (!contentScriptUnavailable(result.error)) return result;
+
+  try {
+    await injectContentScript(tabId);
+    result = await sendMessage(tabId, message);
+  } catch {
+    return { error: "Content script is not ready on this YouTube page. Refresh the video page and try again." };
+  }
+  if (contentScriptUnavailable(result.error)) {
+    return { error: "Content script is not ready on this YouTube page. Refresh the video page and try again." };
+  }
+  return result;
+}
+
+async function analyzeTab(tabId, videoId, forceRefresh = false) {
+  return sendAnalyzeMessage(tabId, videoId, forceRefresh);
 }
 
 async function getActiveYoutubeTab() {
@@ -102,7 +133,7 @@ async function getActiveYoutubeTab() {
   const videoId = tab ? getVideoId(tab) : "";
   if (!tab?.id || !videoId) throw new Error("Open a YouTube watch page first.");
   activeVideoId = videoId;
-  return tab;
+  return { tab, videoId };
 }
 
 async function loadActiveStatus() {
@@ -132,7 +163,7 @@ pairingDigits.forEach((input, index) => {
 
 openCaptions.addEventListener("click", async () => {
   try {
-    const tab = await getActiveYoutubeTab();
+    const { tab } = await getActiveYoutubeTab();
     await chrome.sidePanel.open({ tabId: tab.id });
   } catch (error) {
     setStatus(error.message);
@@ -186,16 +217,20 @@ async function runAnalyze(forceRefresh = false) {
   setStatus(forceRefresh ? "Starting fresh analysis..." : "Preparing video...");
 
   try {
-    const tab = await getActiveYoutubeTab();
+    const { tab, videoId } = await getActiveYoutubeTab();
     if (!await sessionToken()) throw new Error("Pair the backend first.");
 
-    const { error, response } = await analyzeTab(tab.id, forceRefresh);
+    const { error, response } = await analyzeTab(tab.id, videoId, forceRefresh);
     if (response?.status === "already-running") {
       setStatus("Analysis is already running.");
       return;
     }
     if (response?.status === "stale-result-discarded") {
       setStatus("Analysis finished, but the page changed. Result discarded.");
+      return;
+    }
+    if (response?.status === "analysis-finished-background") {
+      setStatus(`Ready in background: ${response.count} bubbles for ${response.videoId} from ${response.transcriptSource}.`);
       return;
     }
     setStatus(error || response?.error

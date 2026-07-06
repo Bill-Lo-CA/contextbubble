@@ -18,6 +18,7 @@ if "--check" in sys.argv:
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
@@ -237,7 +238,8 @@ async def translations(request: Request, authorization: str = Header("")):
     if isinstance(body, JSONResponse):
         return body
     try:
-        result = translate_segment(
+        result = await run_in_threadpool(
+            translate_segment,
             body.get("id", ""),
             body.get("source_text", ""),
             body.get("context_before", ""),
@@ -303,7 +305,8 @@ async def preparation(job_id: str, include_transcript: str = "false", include_se
     auth_error = require_auth(authorization)
     if auth_error:
         return auth_error
-    job = job_payload(
+    job = await run_in_threadpool(
+        job_payload,
         job_id,
         include_transcript=include_transcript == "true",
         include_sentence_entries=include_sentence_entries == "true",
