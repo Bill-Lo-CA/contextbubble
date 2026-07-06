@@ -5,7 +5,7 @@ import time
 from agents import *
 from auth import *
 from config import *
-from db import init_db
+from db import connect_db, init_db
 from jobs import update_job
 from media import *
 from transcript_quality import *
@@ -267,6 +267,40 @@ def self_check_translation_decisions():
     assert cached["translated_text"] == "哈囉世界"
     assert translation_decision("segment-001", "hello world changed", "", "", "zh-TW")["decision"] == "retranslate"
     assert translation_decision("segment-001", "hello world", "", "", "zh-TW", True)["decision"] == "retranslate"
+    retryable = translation_decision("segment-provider-down", "retry me", "", "", "zh-TW")
+    save_translation_cache(
+        retryable["cache_key"],
+        "segment-provider-down",
+        retryable["source_hash"],
+        retryable["context_hash"],
+        "zh-TW",
+        retryable["provider"],
+        retryable["model"],
+        {"translated_text": "", "confidence": 0, "status": "skipped", "decision": "translate", "reason": "provider unavailable"},
+    )
+    assert load_translation_cache(retryable["cache_key"]) is None
+    with connect_db() as conn:
+        conn.execute(
+            "insert into translation_cache values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                retryable["cache_key"],
+                "segment-provider-down",
+                retryable["source_hash"],
+                retryable["context_hash"],
+                "zh-TW",
+                retryable["provider"],
+                retryable["model"],
+                TRANSLATION_PROMPT_VERSION,
+                "",
+                0.0,
+                "skipped",
+                "translate",
+                "provider unavailable",
+                now_iso(),
+                now_iso(),
+            ),
+        )
+    assert translation_decision("segment-provider-down", "retry me", "", "", "zh-TW")["decision"] == "retranslate"
 
 
 def self_check():
