@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import stat
@@ -161,7 +162,7 @@ class AuthPersistenceTests(unittest.TestCase):
         self.assertNotIn(sqlite3.SQLITE_DELETE, database_actions)
 
     def test_init_db_preserves_translation_cache_lookup_index(self):
-        with connect_db() as conn:
+        with closing(connect_db()) as conn:
             columns = [
                 row["name"]
                 for row in conn.execute("pragma index_info(idx_translation_cache_lookup)")

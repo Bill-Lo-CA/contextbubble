@@ -43,11 +43,15 @@ def server_dependency_modules():
     exceptions = types.ModuleType("starlette.exceptions")
     exceptions.HTTPException = type("HTTPException", (Exception,), {})
 
+    concurrency = types.ModuleType("starlette.concurrency")
+    concurrency.run_in_threadpool = mock.AsyncMock()
+
     uvicorn = types.ModuleType("uvicorn")
     uvicorn.run = mock.Mock()
     return {
         "fastapi": fastapi,
         "fastapi.responses": responses,
+        "starlette.concurrency": concurrency,
         "starlette.exceptions": exceptions,
         "uvicorn": uvicorn,
     }
