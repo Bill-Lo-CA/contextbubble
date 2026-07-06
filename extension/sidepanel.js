@@ -3,17 +3,8 @@ const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
 const OWNER_KEY = "contextbubbleAnalysisOwner";
 const captions = document.getElementById("captions");
 let activeVideoId = "";
-let debugInfo = {};
 let renderedSentenceCount = 0;
 let renderedSentenceVideoId = "";
-
-function getVideoId(url) {
-  try {
-    return new URL(url).searchParams.get("v") || "";
-  } catch {
-    return "";
-  }
-}
 
 function formatTime(seconds) {
   seconds = Math.max(0, Math.round(seconds || 0));
@@ -105,17 +96,8 @@ function renderCaptions(log = []) {
 
 function renderSaved(saved) {
   const byVideo = saved[BY_VIDEO_KEY] || {};
-  const keys = Object.keys(byVideo);
   const stateInfo = stateToRender(byVideo, saved[OWNER_KEY]);
   const state = stateInfo.state;
-  debugInfo = {
-    storedKeys: keys,
-    activeVideoId,
-    selectedKey: stateInfo.key,
-    selectedSentenceCount: state.shownSentenceEntries?.length || 0,
-    selectedCaptionCount: state.captionLog?.length || 0,
-  };
-  console.log("[ContextBubble SidePanel]", debugInfo);
   const sentences = state.shownSentenceEntries || [];
   if (sentences.length) {
     const selectedVideoId = stateInfo.key || activeVideoId;
@@ -144,16 +126,7 @@ function stateToRender(byVideo, owner) {
 async function refreshActiveVideo() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const saved = await chrome.storage.local.get([BY_VIDEO_KEY, ACTIVE_VIDEO_KEY, OWNER_KEY]);
-  const tabVideoId = getVideoId(tab?.url || "");
   activeVideoId = saved[OWNER_KEY]?.videoId || "";
-  debugInfo = {
-    storedKeys: Object.keys(saved[BY_VIDEO_KEY] || {}),
-    tabVideoId,
-    storedActiveVideoId: saved[ACTIVE_VIDEO_KEY] || "",
-    owner: saved[OWNER_KEY] || null,
-    activeVideoId,
-  };
-  console.log("[ContextBubble SidePanel:init]", debugInfo);
   renderSaved(saved);
 }
 
