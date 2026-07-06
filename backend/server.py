@@ -1,4 +1,5 @@
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 import tempfile
@@ -32,7 +33,21 @@ from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app):
+    validate_config()
+    init_db()
+    auth.initialize_auth()
+    if VALIDATE_ASR_ON_START:
+        validate_runtime_for_asr()
+    resume_preparations()
+    print(f"ContextBubble backend on http://{BACKEND_HOST}:{BACKEND_PORT}")
+    print(f"ContextBubble API token: {auth.API_TOKEN}")
+    print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def json_response(payload, status=200):
@@ -361,15 +376,6 @@ async def analysis(analysis_id: str, authorization: str = Header("")):
 
 
 def main():
-    validate_config()
-    init_db()
-    auth.initialize_auth()
-    if VALIDATE_ASR_ON_START:
-        validate_runtime_for_asr()
-    resume_preparations()
-    print(f"ContextBubble backend on http://{BACKEND_HOST}:{BACKEND_PORT}")
-    print(f"ContextBubble API token: {auth.API_TOKEN}")
-    print(f"ContextBubble pairing code: {auth.PAIRING_CODE} (expires in 5 minutes)")
     uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT)
 
 

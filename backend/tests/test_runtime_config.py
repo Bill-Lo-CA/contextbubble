@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import os
 from pathlib import Path
@@ -21,6 +22,9 @@ def load_config():
 
 
 class FakeFastAPI:
+    def __init__(self, **kwargs):
+        self.lifespan = kwargs.get("lifespan")
+
     def route(self, *args, **kwargs):
         return lambda function: function
 
@@ -55,6 +59,14 @@ def server_dependency_modules():
         "starlette.exceptions": exceptions,
         "uvicorn": uvicorn,
     }
+
+
+def run_lifespan(server):
+    async def exercise_lifespan():
+        async with server.lifespan(server.app):
+            pass
+
+    asyncio.run(exercise_lifespan())
 
 
 class RuntimeConfigTests(unittest.TestCase):
@@ -138,7 +150,6 @@ class RuntimeConfigTests(unittest.TestCase):
                     mock.patch.object(server, "validate_config"),
                     mock.patch.object(server, "init_db"),
                     mock.patch.object(server.auth, "initialize_auth"),
-                    mock.patch.object(server, "validate_runtime_for_asr") as validate_asr,
                     mock.patch.object(server, "resume_preparations"),
                     mock.patch("builtins.print"),
                 ):
@@ -149,24 +160,34 @@ class RuntimeConfigTests(unittest.TestCase):
                     host="0.0.0.0",
                     port=9000,
                 )
-                validate_asr.assert_not_called()
         finally:
             sys.modules.pop("server", None)
 
-    def test_server_main_validates_asr_before_resume_and_uvicorn_when_enabled(self):
+    def test_lifespan_initializes_runtime_before_serving(self):
         sys.modules.pop("server", None)
         events = []
         modules = server_dependency_modules()
-        modules["uvicorn"].run.side_effect = lambda *args, **kwargs: events.append("uvicorn")
         try:
             with mock.patch.dict(sys.modules, modules):
                 import server
 
                 with (
                     mock.patch.object(server, "VALIDATE_ASR_ON_START", True),
-                    mock.patch.object(server, "validate_config"),
-                    mock.patch.object(server, "init_db"),
-                    mock.patch.object(server.auth, "initialize_auth"),
+                    mock.patch.object(
+                        server,
+                        "validate_config",
+                        side_effect=lambda: events.append("config"),
+                    ),
+                    mock.patch.object(
+                        server,
+                        "init_db",
+                        side_effect=lambda: events.append("database"),
+                    ),
+                    mock.patch.object(
+                        server.auth,
+                        "initialize_auth",
+                        side_effect=lambda: events.append("auth"),
+                    ),
                     mock.patch.object(
                         server,
                         "validate_runtime_for_asr",
@@ -179,13 +200,16 @@ class RuntimeConfigTests(unittest.TestCase):
                     ),
                     mock.patch("builtins.print"),
                 ):
-                    server.main()
+                    run_lifespan(server)
 
-            self.assertEqual(events, ["validate", "resume", "uvicorn"])
+            self.assertEqual(
+                events,
+                ["config", "database", "auth", "validate", "resume"],
+            )
         finally:
             sys.modules.pop("server", None)
 
-    def test_server_main_validation_failure_prevents_resume_and_uvicorn(self):
+    def test_lifespan_validation_failure_prevents_resume(self):
         sys.modules.pop("server", None)
         modules = server_dependency_modules()
         try:
@@ -206,10 +230,9 @@ class RuntimeConfigTests(unittest.TestCase):
                     mock.patch("builtins.print"),
                 ):
                     with self.assertRaisesRegex(FileNotFoundError, "WHISPER_NOT_FOUND"):
-                        server.main()
+                        run_lifespan(server)
 
             resume.assert_not_called()
-            modules["uvicorn"].run.assert_not_called()
         finally:
             sys.modules.pop("server", None)
 
