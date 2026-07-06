@@ -202,7 +202,7 @@ def transcribe_audio_chunk(audio_path, chunk, tmpdir, job_id):
         WHISPER_CMD,
         "-m", WHISPER_MODEL,
         "-f", chunk_path,
-        "-l", "en",
+        "-l", WHISPER_LANGUAGE,
         "-ovtt",
         "-of", transcript_base,
         "-np",
