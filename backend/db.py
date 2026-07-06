@@ -50,6 +50,7 @@ def init_db():
                 source text not null,
                 content_hash text not null,
                 segment_count integer not null,
+                metadata text default '{}',
                 created_at text not null
             );
             create table if not exists transcript_segments (
@@ -139,6 +140,7 @@ def init_db():
             );
         """)
         ensure_column(conn, "preparation_jobs", "source_policy", "text not null default 'live'")
+        ensure_column(conn, "transcript_sources", "metadata", "text default '{}'")
         conn.executescript("""
             create index if not exists idx_preparation_jobs_lookup
                 on preparation_jobs(video_id, learner_level, source_policy, status, created_at);

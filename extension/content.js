@@ -108,8 +108,9 @@
   }
 
   async function requestTranslation(segment, sourceText) {
-    if (translationRequests.has(segment.id) || !authToken) return;
-    translationRequests.add(segment.id);
+    const requestKey = `${segment.id}:${normalizeText(sourceText)}`;
+    if (translationRequests.has(requestKey) || !authToken) return;
+    translationRequests.add(requestKey);
     try {
       const result = await fetchJson("/api/translations", {
         method: "POST",
@@ -133,8 +134,9 @@
   }
 
   async function requestSentenceTranslation(entry) {
-    if (translationRequests.has(entry.id) || !authToken) return;
-    translationRequests.add(entry.id);
+    const requestKey = `${entry.id}:${normalizeText(entry.text)}`;
+    if (translationRequests.has(requestKey) || !authToken) return;
+    translationRequests.add(requestKey);
     await updateSentenceTranslation(getVideoId(), {
       id: entry.id,
       status: "pending",
@@ -194,13 +196,37 @@
 
   function updateSentenceTranslation(videoId, result) {
     return updateVideoState(videoId, (state) => {
-      const entries = state.sentenceEntries || [];
+      const entries = state.shownSentenceEntries || [];
       const entry = entries.find((item) => item.id === result.id);
       if (!entry) return;
       entry.translated_text = normalizeText(result.translated_text);
       entry.translation_status = result.status || "translated";
       entry.translation_reason = result.reason || "";
-      sentenceEntries = entries;
+      state.shownSentenceEntries = entries;
+    });
+  }
+
+  function showSentenceEntry(entry) {
+    if (!entry) return Promise.resolve();
+    return updateVideoState(getVideoId(), (state) => {
+      const entries = state.shownSentenceEntries || [];
+      const existing = entries.find((item) => item.id === entry.id);
+      const next = {
+        ...(existing || {}),
+        ...entry,
+        text: normalizeText(entry.text),
+      };
+      if (existing && normalizeText(existing.text) !== next.text) {
+        next.translated_text = "";
+        next.translation_status = "";
+        next.translation_reason = "";
+      }
+      if (existing) {
+        entries[entries.indexOf(existing)] = next;
+      } else {
+        entries.push(next);
+      }
+      state.shownSentenceEntries = entries.sort((left, right) => left.start_seconds - right.start_seconds);
     });
   }
 
@@ -236,15 +262,20 @@
     chrome.storage.local.set({ [ACTIVE_VIDEO_KEY]: videoId });
   }
 
-  async function resetStoredCaptions(videoId) {
+  function resetTimelineDisplay(videoId, status = "") {
     lastCaptionText = "";
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
-    await updateVideoState(videoId, (state) => {
+    return updateVideoState(videoId, (state) => {
       state.captionLog = [];
+      state.shownSentenceEntries = [];
       state.sentenceEntries = [];
-      state.status = "Re-analyzing...";
+      if (status) state.status = status;
     });
+  }
+
+  async function resetStoredCaptions(videoId) {
+    await resetTimelineDisplay(videoId, "Re-analyzing...");
   }
 
   function appendTranscriptSegments(segments) {
@@ -265,6 +296,14 @@
     sentenceEntries = entries
       .map((entry) => ({ ...entry, text: normalizeText(entry.text) }))
       .sort((left, right) => left.start_seconds - right.start_seconds);
+  }
+
+  function restoreSentenceEntries(videoId) {
+    if (sentenceEntries.length || !videoId) return;
+    chrome.storage.local.get(BY_VIDEO_KEY, (saved) => {
+      const entries = saved[BY_VIDEO_KEY]?.[videoId]?.allSentenceEntries || [];
+      if (entries.length && !sentenceEntries.length) appendSentenceEntries(entries);
+    });
   }
 
   function appendBubbles(nextBubbles) {
@@ -302,6 +341,7 @@
     const stages = {
       queued: "Queued...",
       fetching_captions: "Checking captions...",
+      caption_available: "Captions ready. Checking quality...",
       loading_demo: "Loading demo transcript...",
       fetching_metadata: "Reading video metadata...",
       downloading_audio: "Downloading audio...",
@@ -334,10 +374,17 @@
     while (true) {
       setSharedStatus(stageText(job));
       appendTranscriptSegments(job.segments || []);
+      appendSentenceEntries(job.sentence_entries || []);
+      if (sentenceEntries.length) {
+        await updateVideoState(getVideoId(), (state) => {
+          state.allSentenceEntries = sentenceEntries;
+          state.transcriptSource = job.transcript_source;
+        });
+      }
       if (job.status === "ready") return job;
       if (job.status === "failed") throw new Error(job.message || "Preparation failed.");
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      job = await fetchJson(`/api/preparations/${job.job_id}?include_transcript=true`);
+      job = await fetchJson(`/api/preparations/${job.job_id}?include_transcript=true&include_sentence_entries=true`);
       if (job.updated_at && job.updated_at !== lastUpdated) {
         lastUpdated = job.updated_at;
         lastMove = Date.now();
@@ -374,6 +421,7 @@
     loggedFallbackSegments = new Set();
     lastVideoTime = currentVideo?.currentTime || 0;
     overlay.clear();
+    resetTimelineDisplay(videoId);
   }
 
   async function startAnalysis({ learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
@@ -388,7 +436,7 @@
       if (!currentVideo) throw new Error("No YouTube video element found.");
       if (!authToken) throw new Error("Pair the backend first.");
       enterVideo(videoId, currentVideo);
-      if (forceRefresh) await resetStoredCaptions(videoId);
+      await resetTimelineDisplay(videoId, forceRefresh ? "Re-analyzing..." : "Analyzing...");
       const requestGeneration = pageGeneration;
 
       let job = await startPreparation(videoId, learnerLevel, demoMode, forceRefresh);
@@ -412,8 +460,9 @@
       await updateVideoState(videoId, (state) => {
         state.jobId = job.job_id;
         state.status = "Ready.";
-        state.sentenceEntries = sentenceEntries;
         state.captionLog = state.captionLog || [];
+        state.allSentenceEntries = sentenceEntries;
+        state.transcriptSource = job.transcript_source;
       });
 
       return {
@@ -444,6 +493,7 @@
     if (activeVideoId !== videoId) {
       enterVideo(videoId, currentVideo);
     }
+    restoreSentenceEntries(videoId);
     if (Math.abs(currentVideo.currentTime - lastVideoTime) > 2.5) {
       overlay.clear();
     }
@@ -452,7 +502,9 @@
     const activeSentence = sentenceEntries.find((entry) => {
       return currentVideo.currentTime >= entry.start_seconds && currentVideo.currentTime <= entry.end_seconds;
     });
-    if (activeSentence) requestSentenceTranslation(activeSentence);
+    if (activeSentence) {
+      showSentenceEntry(activeSentence).then(() => requestSentenceTranslation(activeSentence));
+    }
 
     const visibleCaptionText = readCaptionText();
     const activeSegment = transcriptSegments.find((segment) => {

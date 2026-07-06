@@ -97,11 +97,11 @@ function renderSaved(saved) {
     storedKeys: keys,
     activeVideoId,
     selectedKey: stateInfo.key,
-    selectedSentenceCount: state.sentenceEntries?.length || 0,
+    selectedSentenceCount: state.shownSentenceEntries?.length || 0,
     selectedCaptionCount: state.captionLog?.length || 0,
   };
   console.log("[ContextBubble SidePanel]", debugInfo);
-  const sentences = state.sentenceEntries || [];
+  const sentences = state.shownSentenceEntries || [];
   if (sentences.length) {
     renderSentences(sentences);
     return;

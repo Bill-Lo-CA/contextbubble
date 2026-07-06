@@ -27,6 +27,7 @@ from auth import allowed_origin, pair_session, redact_secret_text, reset_pairing
 from db import connect_db, init_db
 from jobs import create_or_reuse_job, job_payload, preparation_events, resume_preparations
 from media import ExternalCommandError, fetch_youtube_subtitles
+from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
 
 
@@ -165,7 +166,7 @@ async def subtitle_upload(request: Request, authorization: str = Header("")):
     content = body.get("content", "")
     if len(content.encode()) > MAX_SUBTITLE_BYTES:
         return json_response({"error": "subtitle file too large", "error_code": "BAD_REQUEST"}, 400)
-    transcript = store_transcript(video_id, body.get("filename", ""), content, "upload")
+    transcript = store_transcript(video_id, body.get("filename", ""), content, "manual_upload", metadata={"provenance": "manual_upload"})
     if not transcript:
         return json_response({"error": "no subtitle segments found", "error_code": "NO_USABLE_CAPTIONS"}, 400)
     return json_response(transcript)
@@ -189,7 +190,7 @@ async def demo_transcript(request: Request, authorization: str = Header("")):
         return json_response({"error": "demo transcript is not allowed for this video", "error_code": "DEMO_NOT_ALLOWED"}, 403)
     fixture = demo_fixture_path(video_id)
     with open(fixture, encoding="utf-8") as file:
-        transcript = store_transcript(video_id, fixture.name, file.read(), "demo")
+        transcript = store_transcript(video_id, fixture.name, file.read(), "demo_fixture", metadata={"provenance": "demo_fixture"})
     return json_response({**transcript, "segments": load_transcript(transcript["transcript_id"])["segments"]})
 
 
@@ -205,11 +206,18 @@ async def youtube_subtitles(request: Request, authorization: str = Header("")):
     try:
         validate_video_id(video_id)
         filename, content, segments = fetch_youtube_subtitles(video_id)
-        transcript = store_transcript(video_id, filename, content, "youtube", segments)
+        caption_kind = "auto" if "auto" in filename.lower() else "unknown"
+        qc_result = caption_source_qc(segments, None, caption_kind)
+        transcript = store_transcript(video_id, filename, content, "youtube_caption", segments, {
+            "caption_qc": qc_result,
+            "caption_kind": caption_kind,
+            "caption_language": "en",
+        })
         return json_response({
             **transcript,
             "request_time_seconds": float(body.get("current_time", 0)),
-            "subtitle_source": "youtube",
+            "subtitle_source": "youtube_caption",
+            "caption_qc": qc_result,
             "segments": load_transcript(transcript["transcript_id"])["segments"],
         })
     except ValueError as exc:

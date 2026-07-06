@@ -10,6 +10,7 @@ from auth import redact_secret_text
 from config import *
 from db import connect_db
 from media import ExternalCommandError, command_error, create_chunks, download_full_audio, fetch_youtube_subtitles, get_youtube_duration, media_duration, merge_transcript_segments, normalize_audio, transcribe_audio_chunk
+from transcript_quality import asr_tools_available, caption_source_qc, route_transcript_source
 from transcripts import load_transcript, sentence_entries, store_transcript
 
 
@@ -123,6 +124,8 @@ def job_payload(job_id, include_ready=True, include_transcript=False, include_se
         payload["progress"] = payload["chunks_completed"] / payload["chunks_total"]
     transcript = load_transcript(payload["transcript_id"]) if payload.get("transcript_id") else None
     segments = transcript["segments"] if transcript else []
+    if transcript and transcript.get("metadata"):
+        payload["transcript_metadata"] = transcript["metadata"]
     if include_transcript and segments:
         payload["segments"] = segments
     if include_sentence_entries and segments:
@@ -192,10 +195,42 @@ def run_preparation_job(job_id):
 
         try:
             filename, content, segments = fetch_youtube_subtitles(video_id, job_id)
-            transcript = store_transcript(video_id, filename, content, "youtube", segments)
-            source = "youtube"
             duration = segments[-1]["end_seconds"] if segments else None
-            add_preparation_event(job_id, "captions_found", "fetching_captions", {"segment_count": len(segments)})
+            caption_kind = "auto" if "auto" in filename.lower() else "unknown"
+            caption_transcript = store_transcript(video_id, filename, content, "youtube_caption", segments, {
+                "caption_kind": caption_kind,
+                "caption_language": "en",
+                "provisional": True,
+            })
+            update_job(job_id, stage="caption_available", transcript_id=caption_transcript["transcript_id"], transcript_source="youtube_caption", duration_seconds=duration, progress=0.18)
+            add_preparation_event(job_id, "captions_found", "caption_available", {"segment_count": len(segments), "transcript_id": caption_transcript["transcript_id"]})
+            qc_result = caption_source_qc(segments, None, caption_kind)
+            add_preparation_event(job_id, "caption_qc_completed", "caption_available", qc_result)
+            if qc_result["source_quality"] == "good":
+                route = {"decision": "use_cc", "reason": "Caption QC passed.", "windows_to_check": [], "confidence": 0.92}
+            else:
+                route = route_transcript_source(
+                    video_id,
+                    duration,
+                    "youtube_caption",
+                    "en",
+                    caption_kind,
+                    qc_result,
+                    segments[:3],
+                    asr_tools_available(),
+                )
+            add_preparation_event(job_id, "transcript_route_selected", "caption_available", route)
+            if route["decision"] == "run_whole_video_whisper":
+                add_preparation_event(job_id, "asr_triggered_by_caption_quality", "caption_available", {"issues": qc_result["issues"]})
+                transcript, source, duration = run_whole_video_asr(job_id, video_id)
+            else:
+                source = "youtube_caption" if route["decision"] == "use_cc" else "youtube_caption_with_warnings"
+                transcript = store_transcript(video_id, filename, content, source, segments, {
+                    "caption_qc": qc_result,
+                    "routing_decision": route,
+                    "caption_kind": caption_kind,
+                    "caption_language": "en",
+                })
         except FileNotFoundError:
             add_preparation_event(job_id, "captions_unavailable", "fetching_captions")
             transcript, source, duration = fallback_transcript_for_missing_captions(job_id, video_id, source_policy)
@@ -240,8 +275,8 @@ def fallback_transcript_for_missing_captions(job_id, video_id, source_policy):
         fixture = demo_fixture_path(video_id)
         with open(fixture, encoding="utf-8") as file:
             content = file.read()
-        transcript = store_transcript(video_id, fixture.name, content, "demo")
-        source = "demo"
+        transcript = store_transcript(video_id, fixture.name, content, "demo_fixture", metadata={"provenance": "demo_fixture"})
+        source = "demo_fixture"
         duration = load_transcript(transcript["transcript_id"])["segments"][-1]["end_seconds"]
         add_preparation_event(job_id, "demo_fixture_selected", "loading_demo")
         return transcript, source, duration
@@ -324,7 +359,7 @@ def run_whole_video_asr(job_id, video_id):
         merged = merge_transcript_segments(all_segments, duration)
         if not merged:
             raise RuntimeError("TRANSCRIPT_MERGE_FAILED")
-        transcript = store_transcript(video_id, f"{video_id}.whole-video.whisper.vtt", source="whisper", segments=merged)
+        transcript = store_transcript(video_id, f"{video_id}.whole-video.whisper.vtt", source="whisper_asr", segments=merged, metadata={"provenance": "whisper_asr"})
         add_preparation_event(job_id, "transcript_merged", "merging_transcript", {"segment_count": len(merged)})
         shutil.rmtree(job_media_dir, ignore_errors=True)
         return transcript, "whisper", duration

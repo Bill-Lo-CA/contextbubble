@@ -92,7 +92,7 @@ def normalized_hash(segments):
         for segment in segments
     ], ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(body.encode()).hexdigest()
-def store_transcript(video_id, filename, content="", source="upload", segments=None):
+def store_transcript(video_id, filename, content="", source="upload", segments=None, metadata=None):
     segments = segments if segments is not None else parse_subtitles(content)
     if not segments:
         return None
@@ -105,8 +105,12 @@ def store_transcript(video_id, filename, content="", source="upload", segments=N
             (video_id, video_id, created_at, created_at),
         )
         conn.execute(
-            "insert or replace into transcript_sources values (?, ?, ?, ?, ?, ?, ?)",
-            (transcript_id, video_id, filename, source, content_hash, len(segments), created_at),
+            """
+            insert or replace into transcript_sources
+            (transcript_id, video_id, filename, source, content_hash, segment_count, metadata, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (transcript_id, video_id, filename, source, content_hash, len(segments), json.dumps(metadata or {}, sort_keys=True), created_at),
         )
         conn.execute("delete from transcript_segments where transcript_id = ?", (transcript_id,))
         conn.executemany(
@@ -122,12 +126,14 @@ def store_transcript(video_id, filename, content="", source="upload", segments=N
         "source": source,
         "segments": segments,
         "content_hash": content_hash,
+        "metadata": metadata or {},
     }
     return {
         "transcript_id": transcript_id,
         "video_id": video_id,
         "segment_count": len(segments),
         "content_hash": content_hash,
+        "metadata": metadata or {},
     }
 def load_transcript(transcript_id):
     if transcript_id in TRANSCRIPTS:
@@ -155,6 +161,7 @@ def load_transcript(transcript_id):
         "source": source["source"],
         "segments": segments,
         "content_hash": source["content_hash"],
+        "metadata": json.loads(source["metadata"] or "{}"),
     }
     TRANSCRIPTS[transcript_id] = transcript
     return transcript

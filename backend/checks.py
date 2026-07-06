@@ -8,6 +8,7 @@ from config import *
 from db import init_db
 from jobs import update_job
 from media import *
+from transcript_quality import *
 from transcripts import *
 
 
@@ -155,6 +156,35 @@ def self_check_sentence_qc():
     return segments
 
 
+def self_check_transcript_source_quality():
+    clean = [
+        {"id": "segment-001", "start_seconds": 0, "end_seconds": 3, "text": "Embeddings represent text."},
+        {"id": "segment-002", "start_seconds": 3, "end_seconds": 6, "text": "Vector search compares meaning."},
+        {"id": "segment-003", "start_seconds": 6, "end_seconds": 9, "text": "The reviewer checks grounding."},
+    ]
+    clean_qc = caption_source_qc(clean, 9)
+    assert clean_qc["source_quality"] == "good"
+    assert clean_qc["recommended_action"] == "use_cc"
+    assert clean_qc["metrics"]["segment_count"] == 3
+
+    repeated = [
+        {"id": f"segment-{index:03d}", "start_seconds": index, "end_seconds": index + 1, "text": "embeddings embeddings"}
+        for index in range(1, 8)
+    ]
+    repeated_qc = caption_source_qc(repeated, 7, "auto")
+    assert repeated_qc["source_quality"] in ("questionable", "poor")
+    assert "auto_caption_detected" in repeated_qc["issues"]
+
+    low_coverage_qc = caption_source_qc(clean, 120)
+    assert low_coverage_qc["source_quality"] == "poor"
+    assert "low_coverage" in low_coverage_qc["issues"]
+
+    poor_route = route_transcript_source("demoid", 120, "youtube_caption", "en", "unknown", low_coverage_qc, clean[:1], False)
+    assert poor_route["decision"] in ("manual_review_recommended", "use_cc_with_warnings")
+    good_route = route_transcript_source("demoid", 9, "youtube_caption", "en", "unknown", clean_qc, clean[:1], True)
+    assert good_route["decision"] == "use_cc"
+
+
 def self_check_analysis_and_storage():
     vtt, _, _ = self_check_subtitle_fixtures()
     segments = parse_subtitles(vtt)
@@ -175,9 +205,11 @@ def self_check_analysis_and_storage():
         {"start_seconds": 300, "end_seconds": 305, "text": "repeat phrase"},
     ])
     assert len(repeated) == 2
-    stored = store_transcript("demo", "demo.vtt", vtt, "demo")
+    stored = store_transcript("demo", "demo.vtt", vtt, "demo_fixture")
     assert stored["segment_count"] == 1
     assert load_transcript(stored["transcript_id"])["segments"][0]["id"] == "segment-001"
+    stored_with_metadata = store_transcript("demo", "demo.vtt", vtt, "manual_upload", metadata={"caption_qc": {"source_quality": "good"}})
+    assert load_transcript(stored_with_metadata["transcript_id"])["metadata"]["caption_qc"]["source_quality"] == "good"
     analysis = run_analysis_for_transcript("demo", "beginner", stored["transcript_id"], True)
     assert analysis["status"] == "completed"
     assert analysis["analysis_metrics"]["accepted_bubble_count"] >= 0
@@ -242,6 +274,7 @@ def self_check():
     self_check_subtitles()
     self_check_media_helpers()
     self_check_sentence_qc()
+    self_check_transcript_source_quality()
     self_check_analysis_and_storage()
     self_check_security_helpers()
     self_check_translation_decisions()
