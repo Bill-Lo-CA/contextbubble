@@ -22,11 +22,16 @@ docker compose up --build
 ```
 
 This command runs attached. In another terminal, run the following command to
-read the admin token and short pairing code from the backend output:
+read the short pairing code from the backend output:
 
 ```sh
 docker compose logs backend
 ```
+
+The admin token is never written to logs. The extension only needs the pairing
+code. For explicit command-line administration, set `CONTEXTBUBBLE_TOKEN` in
+`.env` or read the private generated file deliberately with
+`docker compose exec backend cat /data/contextbubble.token`.
 
 The first startup downloads the default English-only `ggml-base.en.bin` model
 into the `contextbubble-models` volume. Later starts reuse that download.

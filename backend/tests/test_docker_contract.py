@@ -48,7 +48,8 @@ class DockerReadmeContractTest(unittest.TestCase):
             self.docker,
             r"(?is)another terminal.{0,200}docker compose logs backend",
         )
-        self.assertRegex(self.docker, r"(?is)admin token.{0,50}pairing code")
+        self.assertRegex(self.docker, r"(?is)pairing code.{0,200}docker compose logs backend")
+        self.assertIn("admin token is never written to logs", self.docker.lower())
 
     def test_docker_api_is_loopback_only_and_not_lan_exposed(self):
         self.assertRegex(
