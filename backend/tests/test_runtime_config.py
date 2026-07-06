@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import types
@@ -19,6 +20,12 @@ def load_config():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def env_without_dotenv(extra=None):
+    environment = {"CONTEXTBUBBLE_SKIP_DOTENV": "1"}
+    environment.update(extra or {})
+    return environment
 
 
 class FakeFastAPI:
@@ -71,19 +78,60 @@ def run_lifespan(server):
 
 class RuntimeConfigTests(unittest.TestCase):
     def test_backend_bind_defaults_with_clear_environment(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, env_without_dotenv(), clear=True):
             config = load_config()
 
         self.assertEqual(config.BACKEND_HOST, "127.0.0.1")
         self.assertEqual(config.BACKEND_PORT, 8000)
         self.assertFalse(config.VALIDATE_ASR_ON_START)
 
+    def test_dotenv_loads_home_paths_and_keeps_env_file_private(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir, "home")
+            home.mkdir()
+            env_file = Path(tmpdir, ".env")
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "CONTEXTBUBBLE_DATA_DIR=${HOME}/.local/share/contextbubble",
+                        'GEMINI_API_KEY="from-dotenv"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(env_file, 0o644)
+
+            with mock.patch.dict(
+                os.environ,
+                {"CONTEXTBUBBLE_ENV_FILE": str(env_file), "HOME": str(home)},
+                clear=True,
+            ):
+                config = load_config()
+
+            self.assertEqual(config.DATA_DIR, home / ".local/share/contextbubble")
+            self.assertEqual(config.GEMINI_API_KEY, "from-dotenv")
+            self.assertEqual(stat.S_IMODE(env_file.stat().st_mode), 0o600)
+
+    def test_shell_environment_wins_over_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = Path(tmpdir, ".env")
+            env_file.write_text("GEMINI_API_KEY=from-dotenv\n", encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ,
+                {"CONTEXTBUBBLE_ENV_FILE": str(env_file), "GEMINI_API_KEY": "from-shell"},
+                clear=True,
+            ):
+                config = load_config()
+
+        self.assertEqual(config.GEMINI_API_KEY, "from-shell")
+
     def test_startup_asr_validation_accepts_documented_true_values(self):
         for value in ("1", "true", "TRUE", "yes", "YES"):
             with self.subTest(value=value):
                 with mock.patch.dict(
                     os.environ,
-                    {"CONTEXTBUBBLE_VALIDATE_ASR_ON_START": value},
+                    env_without_dotenv({"CONTEXTBUBBLE_VALIDATE_ASR_ON_START": value}),
                     clear=True,
                 ):
                     config = load_config()
@@ -96,7 +144,7 @@ class RuntimeConfigTests(unittest.TestCase):
             "CONTEXTBUBBLE_PORT": "9000",
             "WHISPER_LANGUAGE": "zh",
         }
-        with mock.patch.dict(os.environ, environment, clear=True):
+        with mock.patch.dict(os.environ, env_without_dotenv(environment), clear=True):
             config = load_config()
 
         self.assertEqual(config.BACKEND_HOST, "0.0.0.0")
@@ -104,12 +152,12 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.WHISPER_LANGUAGE, "zh")
 
     def test_backend_port_rejects_out_of_range_value(self):
-        with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_PORT": "70000"}, clear=True):
+        with mock.patch.dict(os.environ, env_without_dotenv({"CONTEXTBUBBLE_PORT": "70000"}), clear=True):
             with self.assertRaisesRegex(ValueError, "CONTEXTBUBBLE_PORT"):
                 load_config()
 
     def test_backend_port_rejects_non_integer_value(self):
-        with mock.patch.dict(os.environ, {"CONTEXTBUBBLE_PORT": "invalid"}, clear=True):
+        with mock.patch.dict(os.environ, env_without_dotenv({"CONTEXTBUBBLE_PORT": "invalid"}), clear=True):
             with self.assertRaisesRegex(ValueError, "CONTEXTBUBBLE_PORT must be an integer"):
                 load_config()
 

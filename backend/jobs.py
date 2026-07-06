@@ -299,9 +299,9 @@ def run_whole_video_asr(job_id, video_id):
     validate_runtime_for_asr()
     with ASR_LOCK:
         update_job(job_id, stage="fetching_metadata", progress=0.05)
-        MEDIA_DIR.mkdir(exist_ok=True)
+        ensure_private_dir(MEDIA_DIR)
         job_media_dir = MEDIA_DIR / job_id
-        job_media_dir.mkdir(exist_ok=True)
+        ensure_private_dir(job_media_dir)
         try:
             duration = get_youtube_duration(video_id, job_id)
         except (RuntimeError, ExternalCommandError):

@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+export CONTEXTBUBBLE_SKIP_DOTENV=1
 
 if [ -x ".venv/bin/python" ]; then
   PYTHON=".venv/bin/python"
