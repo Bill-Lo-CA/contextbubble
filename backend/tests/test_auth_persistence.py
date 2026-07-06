@@ -160,6 +160,24 @@ class AuthPersistenceTests(unittest.TestCase):
 
         self.assertNotIn(sqlite3.SQLITE_DELETE, database_actions)
 
+    def test_init_db_preserves_translation_cache_lookup_index(self):
+        with connect_db() as conn:
+            columns = [
+                row["name"]
+                for row in conn.execute("pragma index_info(idx_translation_cache_lookup)")
+            ]
+
+        self.assertEqual(
+            columns,
+            [
+                "segment_id",
+                "target_language",
+                "provider",
+                "model",
+                "prompt_version",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

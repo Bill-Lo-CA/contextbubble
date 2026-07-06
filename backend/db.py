@@ -158,6 +158,8 @@ def init_db():
                 on asr_chunks(job_id, status);
             create index if not exists idx_preparation_events_job
                 on preparation_events(job_id, created_at);
+            create index if not exists idx_translation_cache_lookup
+                on translation_cache(segment_id, target_language, provider, model, prompt_version);
             create index if not exists idx_session_tokens_expiry
                 on session_tokens(expires_at);
         """)
