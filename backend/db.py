@@ -5,7 +5,7 @@ from config import *
 
 
 def connect_db():
-    DATA_DIR.mkdir(exist_ok=True)
+    ensure_private_dir(DATA_DIR)
     conn = sqlite3.connect(DB_FILE, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma journal_mode=WAL")

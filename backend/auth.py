@@ -51,7 +51,7 @@ def _valid_token(value):
 
 
 def _write_admin_token(token_file, token):
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config.ensure_private_dir(config.DATA_DIR)
     temp_file = token_file.with_name(f".{token_file.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
     try:
         descriptor = os.open(temp_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

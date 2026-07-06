@@ -56,6 +56,7 @@ class AuthPersistenceTests(unittest.TestCase):
 
             self.assertTrue(generated_token)
             self.assertEqual(token_file.read_text(encoding="utf-8").strip(), generated_token)
+            self.assertEqual(stat.S_IMODE(Path(self.tempdir.name).stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(token_file.stat().st_mode), 0o600)
 
             auth.initialize_auth()

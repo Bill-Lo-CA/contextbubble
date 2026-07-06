@@ -61,7 +61,7 @@ class ExternalCommandError(RuntimeError):
             return "WHISPER_FAILED"
         return "EXTERNAL_TOOL_FAILED"
 def log_job(job_id, stage, command, error=None, chunk_index=None, retry_count=0):
-    DATA_DIR.mkdir(exist_ok=True)
+    ensure_private_dir(DATA_DIR)
     tail = ""
     code = None
     if error is not None:

@@ -51,6 +51,19 @@ can stay deterministic while English-to-Traditional-Chinese translation uses a
 real multilingual model. Demo fixtures are only used when Demo mode is checked
 in the popup or when the current video ID is listed in `DEMO_VIDEO_IDS`.
 
+For file-based local config, copy the example file and keep the real file
+private:
+
+```sh
+cp .env.example .env
+chmod 600 .env
+```
+
+The backend loads `.env` from the repository root and expands paths like
+`${HOME}/.local/share/contextbubble`. Values already exported in the shell win
+over `.env`. Runtime state goes under `CONTEXTBUBBLE_DATA_DIR`; that directory
+is kept at mode `0700`, and token/environment files are kept at `0600`.
+
 ## Repeatable Final-Project Demo
 
 Use this path for recording when live YouTube captions, ASR speed, or model
@@ -81,7 +94,7 @@ normal preparation, Concept Agent, Reviewer Agent, validator, cache, bubbles,
 and Side Panel path.
 
 For a Gemini-backed recording, use the same fixture path but start the backend
-with:
+with `GEMINI_API_KEY` set in `.env` or in the shell:
 
 ```sh
 AGENT_MODE=gemini GEMINI_API_KEY="..." python backend/server.py
@@ -195,7 +208,7 @@ must still know a valid token for protected routes.
 - Pairing codes are one-use and expire after five minutes; use **Resend Code** in the popup to print a fresh code in the backend terminal.
 - Only one ASR preparation runs at a time in the local backend process.
 - The stored demo transcript fixture is only available through explicit Demo mode or the demo video allowlist.
-- Preparation jobs, chunks, transcripts, analyses, and bubbles persist in `backend/.contextbubble/contextbubble.sqlite3`.
+- Preparation jobs, chunks, transcripts, analyses, and bubbles persist under `CONTEXTBUBBLE_DATA_DIR`, defaulting to `backend/.contextbubble/contextbubble.sqlite3`.
 - The extension stores only a paired session token in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
 - Transcript, caption, and popup status state is scoped by YouTube video in extension local storage.
 - External-tool failures are logged to `backend/.contextbubble/jobs.log` with bounded stderr tails.

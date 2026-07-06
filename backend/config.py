@@ -7,10 +7,58 @@ import threading
 from datetime import datetime, timezone
 
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_ENV_FILE = ROOT_DIR / ".env"
+TRUE_VALUES = ("1", "true", "yes")
+
+
+def expand_config_path(value):
+    return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def ensure_private_dir(path):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
+
+
+def ensure_private_file(path):
+    path = Path(path)
+    if path.exists():
+        os.chmod(path, 0o600)
+    return path
+
+
+def load_env_file(path=None):
+    if os.environ.get("CONTEXTBUBBLE_SKIP_DOTENV", "").lower() in TRUE_VALUES:
+        return
+    env_file = expand_config_path(path or os.environ.get("CONTEXTBUBBLE_ENV_FILE", DEFAULT_ENV_FILE))
+    if not env_file.exists():
+        return
+    ensure_private_file(env_file)
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ.setdefault(key, os.path.expandvars(value))
+
+
+load_env_file()
+
 API_VERSION = "2026-07-prepare-v1"
 ANALYSIS_VERSION = "agent-mvp-gemini-v2"
 HOME = Path.home()
-DATA_DIR = Path(os.environ.get("CONTEXTBUBBLE_DATA_DIR", Path(__file__).resolve().parent / ".contextbubble"))
+DATA_DIR = expand_config_path(os.environ.get("CONTEXTBUBBLE_DATA_DIR", Path(__file__).resolve().parent / ".contextbubble"))
 DB_FILE = DATA_DIR / "contextbubble.sqlite3"
 JOB_LOG_FILE = DATA_DIR / "jobs.log"
 MEDIA_DIR = DATA_DIR / "media"
@@ -24,7 +72,7 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "tools/whisper.cpp/mo
 WHISPER_NO_GPU = os.environ.get("WHISPER_NO_GPU", "").lower() in ("1", "true", "yes")
 VALIDATE_ASR_ON_START = os.environ.get(
     "CONTEXTBUBBLE_VALIDATE_ASR_ON_START", ""
-).lower() in ("1", "true", "yes")
+).lower() in TRUE_VALUES
 WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "en").strip() or "en"
 BACKEND_HOST = os.environ.get("CONTEXTBUBBLE_HOST", "127.0.0.1").strip() or "127.0.0.1"
 try:
@@ -61,7 +109,7 @@ MAX_BEARER_TOKEN_BYTES = 512
 
 def set_data_dir(path):
     global DATA_DIR, DB_FILE, JOB_LOG_FILE, MEDIA_DIR
-    DATA_DIR = Path(path)
+    DATA_DIR = expand_config_path(path)
     DB_FILE = DATA_DIR / "contextbubble.sqlite3"
     JOB_LOG_FILE = DATA_DIR / "jobs.log"
     MEDIA_DIR = DATA_DIR / "media"
