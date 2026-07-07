@@ -297,7 +297,7 @@
       } finally {
         inFlightTranslations.delete(requestKey);
       }
-    });
+    })();
     return queued;
   }
 
