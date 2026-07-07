@@ -775,7 +775,7 @@
     loggedFallbackSegments = new Set();
     lastVideoTime = currentVideo?.currentTime || 0;
     overlay.clear();
-    resetTimelineDisplay(videoId);
+    if (forceReset) resetTimelineDisplay(videoId);
   }
 
   async function startAnalysis({ tabId, videoId: requestedVideoId, learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
@@ -815,7 +815,7 @@
       await updateVideoState(videoId, (state) => {
         state.bubbles = job.bubbles || [];
         state.jobId = job.job_id;
-        state.status = "Ready.";
+        state.status = stageText(job);
         state.captionLog = state.captionLog || [];
       });
       await syncStoredSentenceEntries(videoId, finalSentenceEntries, job.transcript_source);
