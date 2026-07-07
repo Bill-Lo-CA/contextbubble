@@ -505,6 +505,7 @@
     loggedFallbackSegments = new Set();
     return updateVideoState(videoId, (state) => {
       state.bubbles = [];
+      state.allSentenceEntries = [];
       state.captionLog = [];
       state.shownSentenceEntries = [];
       state.sentenceEntries = [];
@@ -590,13 +591,14 @@
       state.shownSentenceEntries = shown
         .map((entry) => {
           const replacement = replacementSentenceEntry(entry, byId, mergedEntries);
-          if (!replacement) return entry;
+          if (!replacement) return null;
           const next = mergeStoredSentenceEntry(replacement, entry);
           if (normalizeText(entry.text) !== next.text) {
             changed.push(next);
           }
           return next;
         })
+        .filter(Boolean)
         .sort((left, right) => left.start_seconds - right.start_seconds);
       const readyToTranslate = mergedEntries
         .filter((entry) => !entry.translated_text)
