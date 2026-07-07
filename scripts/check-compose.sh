@@ -10,4 +10,4 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 docker compose --env-file /dev/null config --quiet
-docker compose --env-file .env.example config --quiet
+docker compose --env-file .env.docker.example config --quiet

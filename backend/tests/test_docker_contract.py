@@ -16,6 +16,7 @@ REQUIREMENTS_LOCK = ROOT / "requirements.lock"
 YTDLP_REQUIREMENTS_LOCK = ROOT / "requirements-yt-dlp.lock"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
+ENV_DOCKER_EXAMPLE = ROOT / ".env.docker.example"
 GITIGNORE = ROOT / ".gitignore"
 CHECK_COMPOSE = ROOT / "scripts" / "check-compose.sh"
 README = ROOT / "README.md"
@@ -68,7 +69,7 @@ class DockerReadmeContractTest(unittest.TestCase):
             r"(?is)No `.env` file is needed.{0,200}interpolation.{0,200}"
             r"\.dockerignore.{0,100}excludes",
         )
-        self.assertRegex(self.docker, r"(?is)defaults.{0,300}cp \.env\.example \.env")
+        self.assertRegex(self.docker, r"(?is)defaults.{0,300}cp \.env\.docker\.example \.env")
 
     def test_docker_workflow_documents_persistent_state_and_restarts(self):
         for detail in (
@@ -166,7 +167,7 @@ class DockerReadmeContractTest(unittest.TestCase):
             self.docker,
             r"(?is)POSIX shell.{0,100}(?:Git Bash|WSL).{0,300}"
             r"docker compose config --quiet.{0,300}"
-            r"docker compose --env-file \.env\.example config --quiet",
+            r"docker compose --env-file \.env\.docker\.example config --quiet",
         )
         self.assertRegex(
             self.docker,
@@ -261,9 +262,9 @@ class DockerComposeContractTest(unittest.TestCase):
             compose,
         )
 
-    def test_env_example_is_secret_free_and_documents_model_choices(self):
-        self.assertTrue(ENV_EXAMPLE.is_file(), ".env.example must exist")
-        example = ENV_EXAMPLE.read_text()
+    def test_docker_env_example_is_secret_free_and_documents_model_choices(self):
+        self.assertTrue(ENV_DOCKER_EXAMPLE.is_file(), ".env.docker.example must exist")
+        example = ENV_DOCKER_EXAMPLE.read_text()
 
         self.assertRegex(example, r"(?m)^CONTEXTBUBBLE_TOKEN=$")
         self.assertIn("/data/contextbubble.token", example)
@@ -298,6 +299,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn(".env", rules)
         self.assertIn(".env.*", rules)
         self.assertIn("!.env.example", rules)
+        self.assertIn("!.env.docker.example", rules)
 
     def test_compose_interpolates_with_no_env_file(self):
         rendered = self.render_compose()
@@ -312,12 +314,12 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn("CPU-only invariant", compose)
         self.assertIn('      WHISPER_NO_GPU: "1"\n', compose)
         self.assertNotRegex(compose, r"WHISPER_NO_GPU.*\$\{")
-        self.assertNotIn("WHISPER_NO_GPU", ENV_EXAMPLE.read_text())
+        self.assertNotIn("WHISPER_NO_GPU", ENV_DOCKER_EXAMPLE.read_text())
 
     def test_compose_interpolates_with_copied_example_env(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             env_file = Path(temp_dir) / ".env"
-            shutil.copyfile(ENV_EXAMPLE, env_file)
+            shutil.copyfile(ENV_DOCKER_EXAMPLE, env_file)
             rendered = self.render_compose(self.read_env(env_file))
 
         self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
@@ -338,7 +340,7 @@ class DockerComposeContractTest(unittest.TestCase):
             "WHISPER_LANGUAGE": "zh",
         }
         overrides = {}
-        for line in ENV_EXAMPLE.read_text().splitlines():
+        for line in ENV_DOCKER_EXAMPLE.read_text().splitlines():
             uncommented = line.removeprefix("# ")
             if "=" in uncommented:
                 name, value = uncommented.split("=", 1)
@@ -356,7 +358,7 @@ class DockerComposeContractTest(unittest.TestCase):
 
         self.assertTrue(script.startswith("#!/usr/bin/env sh\nset -eu\n"))
         self.assertIn("docker compose --env-file /dev/null config --quiet", script)
-        self.assertIn("docker compose --env-file .env.example config --quiet", script)
+        self.assertIn("docker compose --env-file .env.docker.example config --quiet", script)
         self.assertIn("docker compose is required", script)
         for mutation in ("cp .env", "rm .env", "> .env", "mv .env"):
             self.assertNotIn(mutation, script)

@@ -45,10 +45,10 @@ image because `.dockerignore` excludes it. To override defaults, first preserve
 any existing `.env`. Only when no `.env` exists, create one from the example:
 
 ```sh
-cp .env.example .env
+cp .env.docker.example .env
 ```
 
-Then edit only the values that need overrides. `.env.example` documents these
+Then edit only the values that need overrides. `.env.docker.example` documents these
 settings:
 
 - `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
@@ -70,7 +70,7 @@ serving or resumes jobs.
 The default Whisper model is English-only. For multilingual transcription, set
 all four model values as one coherent tuple: `WHISPER_MODEL`,
 `WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and `WHISPER_LANGUAGE`. The
-commented example in `.env.example` selects the multilingual base model with
+commented example in `.env.docker.example` selects the multilingual base model with
 `WHISPER_LANGUAGE=zh`; use `WHISPER_LANGUAGE=auto` with the same multilingual
 model tuple for automatic language detection. Do not combine the English-only
 model URL or SHA with a multilingual model path.
@@ -116,7 +116,7 @@ then validate the example:
 
 ```sh
 docker compose config --quiet
-docker compose --env-file .env.example config --quiet
+docker compose --env-file .env.docker.example config --quiet
 ```
 
 These commands check configuration rendering. They do not run the image or

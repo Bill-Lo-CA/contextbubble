@@ -24,6 +24,7 @@ backend/**/*.log
 .env
 .env.*
 !.env.example
+!.env.docker.example
 *.secret
 *.secrets
 *.token
