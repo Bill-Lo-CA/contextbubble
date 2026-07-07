@@ -98,7 +98,9 @@ function renderSaved(saved) {
   const byVideo = saved[BY_VIDEO_KEY] || {};
   const stateInfo = stateToRender(byVideo, saved[OWNER_KEY]);
   const state = stateInfo.state;
-  const sentences = state.shownSentenceEntries || [];
+  const sentences = state.allSentenceEntries?.length
+    ? state.allSentenceEntries
+    : state.shownSentenceEntries || [];
   if (sentences.length) {
     const selectedVideoId = stateInfo.key || activeVideoId;
     const sameVideo = selectedVideoId === renderedSentenceVideoId;

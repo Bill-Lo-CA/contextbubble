@@ -394,14 +394,22 @@
 
   function updateSentenceTranslation(videoId, result, expectedText = "") {
     return updateVideoState(videoId, (state) => {
-      const entries = state.shownSentenceEntries || [];
-      const entry = entries.find((item) => item.id === result.id);
-      if (!entry) return;
-      if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return;
-      entry.translated_text = normalizeText(result.translated_text);
-      entry.translation_status = result.status || "translated";
-      entry.translation_reason = result.reason || "";
-      state.shownSentenceEntries = entries;
+      const applyTranslation = (entries) => {
+        const entry = entries.find((item) => item.id === result.id);
+        if (!entry) return false;
+        if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return false;
+        entry.translated_text = normalizeText(result.translated_text);
+        entry.translation_status = result.status || "translated";
+        entry.translation_reason = result.reason || "";
+        return true;
+      };
+      const shownEntries = state.shownSentenceEntries || [];
+      const allEntries = state.allSentenceEntries || [];
+      const updatedShown = applyTranslation(shownEntries);
+      const updatedAll = applyTranslation(allEntries);
+      if (updatedShown) state.shownSentenceEntries = shownEntries;
+      if (updatedAll) state.allSentenceEntries = allEntries;
+      return updatedShown || updatedAll;
     });
   }
 
