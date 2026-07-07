@@ -539,6 +539,30 @@
       .sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
+  function mergeStoredSentenceEntry(entry, existing) {
+    const next = {
+      ...(existing || {}),
+      ...entry,
+      text: normalizeText(entry.text),
+      source_text: normalizeText(entry.source_text || entry.text),
+    };
+    const sameText = existing && normalizeText(existing.text) === next.text;
+    if (!sameText) {
+      next.translated_text = "";
+      next.translation_status = "";
+      next.translation_reason = "";
+    }
+    const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
+    if (translation) {
+      next.translated_text = normalizeText(translation.translated_text);
+      next.translation_status = translation.status || "translated";
+      next.translation_reason = translation.reason || "";
+    } else if (inFlightTranslations.has(sentenceTranslationKey(next)) && !next.translated_text) {
+      next.translation_status = "pending";
+    }
+    return next;
+  }
+
   function replacementSentenceEntry(entry, byId, entries) {
     const matched = byId.get(entry.id);
     if (matched) return matched;
@@ -553,42 +577,30 @@
 
   async function syncStoredSentenceEntries(videoId, entries, transcriptSource) {
     if (!entries.length) return;
-    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const slots = Math.max(0, TRANSLATION_LOOKAHEAD_BATCH - inFlightTranslations.size);
     const changedEntries = await updateVideoState(videoId, (state) => {
-      state.allSentenceEntries = entries;
+      const previousById = new Map((state.allSentenceEntries || []).map((entry) => [entry.id, entry]));
+      const mergedEntries = entries.map((entry) => mergeStoredSentenceEntry(entry, previousById.get(entry.id)));
+      const byId = new Map(mergedEntries.map((entry) => [entry.id, entry]));
+      state.allSentenceEntries = mergedEntries;
       state.transcriptSource = transcriptSource;
       const shown = state.shownSentenceEntries || [];
       const changed = [];
       state.shownSentenceEntries = shown
         .map((entry) => {
-          const replacement = replacementSentenceEntry(entry, byId, entries);
+          const replacement = replacementSentenceEntry(entry, byId, mergedEntries);
           if (!replacement) return entry;
-          const next = {
-            ...entry,
-            ...replacement,
-            text: normalizeText(replacement.text),
-            source_text: normalizeText(replacement.source_text || replacement.text),
-          };
+          const next = mergeStoredSentenceEntry(replacement, entry);
           if (normalizeText(entry.text) !== next.text) {
-            next.translated_text = "";
-            next.translation_status = "";
-            next.translation_reason = "";
-            const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
-            if (translation) {
-              next.translated_text = normalizeText(translation.translated_text);
-              next.translation_status = translation.status || "translated";
-              next.translation_reason = translation.reason || "";
-            } else {
-              if (inFlightTranslations.has(sentenceTranslationKey(next))) {
-                next.translation_status = "pending";
-              }
-              changed.push(next);
-            }
+            changed.push(next);
           }
           return next;
         })
         .sort((left, right) => left.start_seconds - right.start_seconds);
-      return changed;
+      const readyToTranslate = mergedEntries
+        .filter((entry) => !entry.translated_text)
+        .filter((entry) => canQueueTranslation(sentenceTranslationKey(entry), videoId));
+      return [...changed, ...readyToTranslate].slice(0, slots);
     });
     for (const entry of changedEntries || []) {
       requestSentenceTranslation(videoId, entry);
