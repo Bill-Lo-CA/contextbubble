@@ -288,6 +288,26 @@ def self_check_analysis_and_storage():
     assert hashlib.sha256(b"demo").hexdigest()
 
 
+def self_check_concept_agent_fallback():
+    original_mode = window_note.__globals__["AGENT_MODE"]
+    original_llm = window_note.__globals__["llm_concept_agent"]
+    try:
+        window_note.__globals__["AGENT_MODE"] = "ollama"
+        window_note.__globals__["llm_concept_agent"] = lambda *_: []
+        note = window_note([
+            {
+                "id": "segment-001",
+                "start_seconds": 0,
+                "end_seconds": 5,
+                "text": "The Supreme Leader funeral became a display of regime power.",
+            }
+        ], "beginner")
+        assert note["candidate_concepts"], "empty LLM output should fall back to heuristic concepts"
+    finally:
+        window_note.__globals__["AGENT_MODE"] = original_mode
+        window_note.__globals__["llm_concept_agent"] = original_llm
+
+
 def self_check_security_helpers():
     secret = f"{auth.API_TOKEN} {auth.PAIRING_CODE} key={GEMINI_API_KEY or 'demo'}"
     redacted = auth.redact_secret_text(secret)
@@ -374,5 +394,6 @@ def self_check():
     self_check_sentence_qc()
     self_check_transcript_source_quality()
     self_check_analysis_and_storage()
+    self_check_concept_agent_fallback()
     self_check_security_helpers()
     self_check_translation_decisions()
