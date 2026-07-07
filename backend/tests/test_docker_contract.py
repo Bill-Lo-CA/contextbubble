@@ -204,20 +204,20 @@ class DockerComposeContractTest(unittest.TestCase):
         "FFMPEG_CMD": "ffmpeg",
         "FFPROBE_CMD": "ffprobe",
         "WHISPER_CMD": "/opt/whisper/bin/whisper-cli",
-        "WHISPER_MODEL": "${WHISPER_MODEL:-/models/ggml-base.en.bin}",
+        "WHISPER_MODEL": "${DOCKER_WHISPER_MODEL:-/models/ggml-base.en.bin}",
         "WHISPER_MODEL_URL": (
-            "${WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+            "${DOCKER_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/"
             "80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.en.bin}"
         ),
         "WHISPER_MODEL_SHA256": (
-            "${WHISPER_MODEL_SHA256:-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002}"
+            "${DOCKER_WHISPER_MODEL_SHA256:-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002}"
         ),
-        "WHISPER_LANGUAGE": "${WHISPER_LANGUAGE:-en}",
+        "WHISPER_LANGUAGE": "${DOCKER_WHISPER_LANGUAGE:-en}",
         "WHISPER_NO_GPU": "1",
         "AGENT_MODE": "${AGENT_MODE:-heuristic}",
         "GEMINI_API_KEY": "${GEMINI_API_KEY:-}",
         "GEMINI_MODEL": "${GEMINI_MODEL:-gemini-2.5-flash}",
-        "OLLAMA_BASE_URL": "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}",
+        "OLLAMA_BASE_URL": "${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}",
         "OLLAMA_MODEL": "${OLLAMA_MODEL:-qwen3:8b}",
         "TRANSLATION_MODE": "${TRANSLATION_MODE:-ollama}",
         "TRANSLATION_MODEL": "${TRANSLATION_MODEL:-qwen3:8b}",
@@ -275,28 +275,28 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn("/data/contextbubble.token", example)
         for default in (
             "WHISPER_CPP_REF=v1.8.6",
+            "DOCKER_OLLAMA_BASE_URL=http://host.docker.internal:11434",
             "AGENT_MODE=heuristic",
             "GEMINI_API_KEY=",
             "GEMINI_MODEL=gemini-2.5-flash",
-            "OLLAMA_BASE_URL=http://host.docker.internal:11434",
             "OLLAMA_MODEL=qwen3:8b",
             "TRANSLATION_MODE=ollama",
             "TRANSLATION_MODEL=qwen3:8b",
             "TRANSCRIPT_BLOCK_SPLITTER_MODE=ollama",
             "TRANSCRIPT_BLOCK_SPLITTER_MODEL=llama3.2:3b",
             "DEMO_VIDEO_IDS=",
-            "WHISPER_MODEL=/models/ggml-base.en.bin",
-            "WHISPER_LANGUAGE=en",
+            "DOCKER_WHISPER_MODEL=/models/ggml-base.en.bin",
+            "DOCKER_WHISPER_LANGUAGE=en",
         ):
             self.assertIn(default, example)
         self.assertNotIn("WHISPER_NO_GPU", example)
         self.assertRegex(example, r"(?i)english[- ]only")
         for multilingual_override in (
-            "# WHISPER_MODEL=/models/ggml-base.bin",
-            "# WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+            "# DOCKER_WHISPER_MODEL=/models/ggml-base.bin",
+            "# DOCKER_WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/"
             "80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.bin",
-            "# WHISPER_MODEL_SHA256=60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
-            "# WHISPER_LANGUAGE=zh",
+            "# DOCKER_WHISPER_MODEL_SHA256=60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "# DOCKER_WHISPER_LANGUAGE=zh",
         ):
             self.assertIn(multilingual_override, example)
         self.assertNotRegex(example, r"(?m)^CONTEXTBUBBLE_TOKEN=\S+")
@@ -334,6 +334,7 @@ class DockerComposeContractTest(unittest.TestCase):
 
         self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
         self.assertIn('WHISPER_MODEL: "/models/ggml-base.en.bin"', rendered)
+        self.assertIn('OLLAMA_BASE_URL: "http://host.docker.internal:11434"', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
         self.assertIn('OLLAMA_MODEL: "qwen3:8b"', rendered)
         self.assertIn('TRANSLATION_MODE: "ollama"', rendered)
@@ -353,15 +354,25 @@ class DockerComposeContractTest(unittest.TestCase):
             ),
             "WHISPER_LANGUAGE": "zh",
         }
+        docker_override_names = {
+            "WHISPER_MODEL": "DOCKER_WHISPER_MODEL",
+            "WHISPER_MODEL_URL": "DOCKER_WHISPER_MODEL_URL",
+            "WHISPER_MODEL_SHA256": "DOCKER_WHISPER_MODEL_SHA256",
+            "WHISPER_LANGUAGE": "DOCKER_WHISPER_LANGUAGE",
+        }
         overrides = {}
         for line in ENV_DOCKER_EXAMPLE.read_text().splitlines():
             uncommented = line.removeprefix("# ")
             if "=" in uncommented:
                 name, value = uncommented.split("=", 1)
-                if name in expected:
-                    overrides[name] = value
+                for runtime_name, docker_name in docker_override_names.items():
+                    if name == docker_name:
+                        overrides[docker_name] = value
 
-        self.assertEqual(overrides, expected)
+        self.assertEqual(
+            {runtime_name: overrides[docker_name] for runtime_name, docker_name in docker_override_names.items()},
+            expected,
+        )
         rendered = self.render_compose(overrides)
         for name, value in expected.items():
             self.assertIn(f'{name}: "{value}"', rendered)

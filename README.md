@@ -53,13 +53,15 @@ settings:
 
 - `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
 - `WHISPER_CPP_REF`: whisper.cpp version used when building the image.
-- `WHISPER_MODEL`, `WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and
-  `WHISPER_LANGUAGE`: model path, pinned download, integrity hash, and language.
+- `DOCKER_WHISPER_MODEL`, `DOCKER_WHISPER_MODEL_URL`,
+  `DOCKER_WHISPER_MODEL_SHA256`, and `DOCKER_WHISPER_LANGUAGE`: container model
+  path, pinned download, integrity hash, and language.
 - `AGENT_MODE`: `heuristic` (the no-provider default), `gemini`, or `ollama`.
 - `GEMINI_API_KEY` and `GEMINI_MODEL`: Gemini credentials and model selection.
-- `OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The default
-  `http://host.docker.internal:11434` reaches Ollama on the host; Compose adds
-  the Linux host-gateway mapping while Docker Desktop provides the same name.
+- `DOCKER_OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The
+  default `http://host.docker.internal:11434` reaches Ollama on the host;
+  Compose adds the Linux host-gateway mapping while Docker Desktop provides the
+  same name.
 - `TRANSLATION_MODE` and `TRANSLATION_MODEL`: provider and model used by the
   translation API.
 - `TRANSCRIPT_BLOCK_SPLITTER_MODE` and `TRANSCRIPT_BLOCK_SPLITTER_MODEL`:
@@ -73,12 +75,13 @@ startup ASR validation, so the container fails fast when `yt-dlp`, `ffmpeg`,
 serving or resumes jobs.
 
 The default Whisper model is English-only. For multilingual transcription, set
-all four model values as one coherent tuple: `WHISPER_MODEL`,
-`WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and `WHISPER_LANGUAGE`. The
-commented example in `.env.docker.example` selects the multilingual base model with
-`WHISPER_LANGUAGE=zh`; use `WHISPER_LANGUAGE=auto` with the same multilingual
-model tuple for automatic language detection. Do not combine the English-only
-model URL or SHA with a multilingual model path.
+all four Docker model override values as one coherent tuple:
+`DOCKER_WHISPER_MODEL`, `DOCKER_WHISPER_MODEL_URL`,
+`DOCKER_WHISPER_MODEL_SHA256`, and `DOCKER_WHISPER_LANGUAGE`. The commented
+example in `.env.docker.example` selects the multilingual base model with
+`DOCKER_WHISPER_LANGUAGE=zh`; use `DOCKER_WHISPER_LANGUAGE=auto` with the same
+multilingual model tuple for automatic language detection. Do not combine the
+English-only model URL or SHA with a multilingual model path.
 
 Compose keeps state in two named volumes:
 
