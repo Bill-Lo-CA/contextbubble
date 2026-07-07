@@ -70,6 +70,7 @@ class DockerReadmeContractTest(unittest.TestCase):
             r"\.dockerignore.{0,100}excludes",
         )
         self.assertRegex(self.docker, r"(?is)defaults.{0,300}cp \.env\.docker\.example \.env")
+        self.assertIn("WHISPER_CPP_REF", self.docker)
 
     def test_docker_workflow_documents_persistent_state_and_restarts(self):
         for detail in (
@@ -218,6 +219,10 @@ class DockerComposeContractTest(unittest.TestCase):
         "GEMINI_MODEL": "${GEMINI_MODEL:-gemini-2.5-flash}",
         "OLLAMA_BASE_URL": "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}",
         "OLLAMA_MODEL": "${OLLAMA_MODEL:-qwen3:8b}",
+        "TRANSLATION_MODE": "${TRANSLATION_MODE:-ollama}",
+        "TRANSLATION_MODEL": "${TRANSLATION_MODEL:-qwen3:8b}",
+        "TRANSCRIPT_BLOCK_SPLITTER_MODE": "${TRANSCRIPT_BLOCK_SPLITTER_MODE:-ollama}",
+        "TRANSCRIPT_BLOCK_SPLITTER_MODEL": "${TRANSCRIPT_BLOCK_SPLITTER_MODEL:-llama3.2:3b}",
         "DEMO_VIDEO_IDS": "${DEMO_VIDEO_IDS:-}",
     }
 
@@ -269,11 +274,16 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertRegex(example, r"(?m)^CONTEXTBUBBLE_TOKEN=$")
         self.assertIn("/data/contextbubble.token", example)
         for default in (
+            "WHISPER_CPP_REF=v1.8.6",
             "AGENT_MODE=heuristic",
             "GEMINI_API_KEY=",
             "GEMINI_MODEL=gemini-2.5-flash",
             "OLLAMA_BASE_URL=http://host.docker.internal:11434",
             "OLLAMA_MODEL=qwen3:8b",
+            "TRANSLATION_MODE=ollama",
+            "TRANSLATION_MODEL=qwen3:8b",
+            "TRANSCRIPT_BLOCK_SPLITTER_MODE=ollama",
+            "TRANSCRIPT_BLOCK_SPLITTER_MODEL=llama3.2:3b",
             "DEMO_VIDEO_IDS=",
             "WHISPER_MODEL=/models/ggml-base.en.bin",
             "WHISPER_LANGUAGE=en",
@@ -326,6 +336,10 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn('WHISPER_MODEL: "/models/ggml-base.en.bin"', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
         self.assertIn('OLLAMA_MODEL: "qwen3:8b"', rendered)
+        self.assertIn('TRANSLATION_MODE: "ollama"', rendered)
+        self.assertIn('TRANSLATION_MODEL: "qwen3:8b"', rendered)
+        self.assertIn('TRANSCRIPT_BLOCK_SPLITTER_MODE: "ollama"', rendered)
+        self.assertIn('TRANSCRIPT_BLOCK_SPLITTER_MODEL: "llama3.2:3b"', rendered)
 
     def test_multilingual_override_renders_as_one_coherent_tuple(self):
         expected = {

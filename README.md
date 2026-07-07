@@ -52,6 +52,7 @@ Then edit only the values that need overrides. `.env.docker.example` documents t
 settings:
 
 - `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
+- `WHISPER_CPP_REF`: whisper.cpp version used when building the image.
 - `WHISPER_MODEL`, `WHISPER_MODEL_URL`, `WHISPER_MODEL_SHA256`, and
   `WHISPER_LANGUAGE`: model path, pinned download, integrity hash, and language.
 - `AGENT_MODE`: `heuristic` (the no-provider default), `gemini`, or `ollama`.
@@ -59,6 +60,10 @@ settings:
 - `OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The default
   `http://host.docker.internal:11434` reaches Ollama on the host; Compose adds
   the Linux host-gateway mapping while Docker Desktop provides the same name.
+- `TRANSLATION_MODE` and `TRANSLATION_MODEL`: provider and model used by the
+  translation API.
+- `TRANSCRIPT_BLOCK_SPLITTER_MODE` and `TRANSCRIPT_BLOCK_SPLITTER_MODEL`:
+  provider and model used for semantic transcript block splitting.
 - `DEMO_VIDEO_IDS`: optional comma-separated fixture video IDs.
 
 This Compose service is CPU-only: it fixes `WHISPER_NO_GPU=1`, always forwards
