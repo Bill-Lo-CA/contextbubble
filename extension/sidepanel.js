@@ -1,6 +1,7 @@
 const BY_VIDEO_KEY = "contextbubbleByVideo";
 const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
 const OWNER_KEY = "contextbubbleAnalysisOwner";
+const bubbleJumps = document.getElementById("bubble-jumps");
 const captions = document.getElementById("captions");
 let activeVideoId = "";
 let renderedSentenceCount = 0;
@@ -94,10 +95,59 @@ function renderCaptions(log = []) {
   })), { autoScroll });
 }
 
+function bubbleLabel(bubble) {
+  return `${formatTime(bubble.start_seconds)} ${normalizeText(bubble.concept || bubble.title || "Bubble")}`;
+}
+
+async function jumpToBubble(bubble, button) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  button.disabled = true;
+  chrome.tabs.sendMessage(tab.id, {
+    type: "contextbubble:jump-to-bubble",
+    videoId: activeVideoId,
+    startSeconds: bubble.start_seconds,
+    concept: bubble.concept || "",
+  }, () => {
+    void chrome.runtime.lastError;
+    button.disabled = false;
+  });
+}
+
+function renderBubbleJumps(bubbles = []) {
+  bubbleJumps.textContent = "";
+  const title = document.createElement("h2");
+  title.className = "bubble-jumps-title";
+  title.textContent = bubbles.length ? `Analyzed bubbles (${bubbles.length})` : "Analyzed bubbles";
+  bubbleJumps.append(title);
+
+  if (!bubbles.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No analyzed bubbles yet.";
+    bubbleJumps.append(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "bubble-jumps-list";
+  for (const bubble of bubbles.slice().sort((left, right) => left.start_seconds - right.start_seconds)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "bubble-jump";
+    button.textContent = bubbleLabel(bubble);
+    button.title = normalizeText(bubble.explanation || bubble.reason || bubble.concept || "");
+    button.addEventListener("click", () => jumpToBubble(bubble, button));
+    list.append(button);
+  }
+  bubbleJumps.append(list);
+}
+
 function renderSaved(saved) {
   const byVideo = saved[BY_VIDEO_KEY] || {};
   const stateInfo = stateToRender(byVideo, saved[OWNER_KEY]);
   const state = stateInfo.state;
+  renderBubbleJumps(state.bubbles || []);
   const sentences = state.allSentenceEntries?.length
     ? state.allSentenceEntries
     : state.shownSentenceEntries || [];

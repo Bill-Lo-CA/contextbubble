@@ -504,6 +504,7 @@
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
     return updateVideoState(videoId, (state) => {
+      state.bubbles = [];
       state.captionLog = [];
       state.shownSentenceEntries = [];
       state.sentenceEntries = [];
@@ -638,6 +639,7 @@
         appendTranscriptSegments(job.segments || []);
         appendBubbles(job.bubbles || []);
         await updateVideoState(videoId, (state) => {
+          state.bubbles = bubbles;
           state.transcriptSource = job.transcript_source;
           state.status = job.status === "ready" ? "Ready." : stageText(job);
         });
@@ -809,6 +811,7 @@
       await rememberPreparationJob(videoId, job);
       const finalSentenceEntries = normalizedSentenceEntries(job.sentence_entries || []);
       await updateVideoState(videoId, (state) => {
+        state.bubbles = job.bubbles || [];
         state.jobId = job.job_id;
         state.status = "Ready.";
         state.captionLog = state.captionLog || [];
@@ -842,6 +845,19 @@
     } finally {
       analysisRunning = false;
     }
+  }
+
+  function jumpToBubble(message) {
+    const currentVideo = findVideo();
+    const videoId = getVideoId();
+    if (!currentVideo || !videoId || message.videoId !== videoId) {
+      return { error: "Active YouTube video does not match this analysis." };
+    }
+    const startSeconds = Math.max(0, Number(message.startSeconds || 0));
+    shownKeys = new Set();
+    currentVideo.currentTime = Math.max(0, startSeconds - 0.2);
+    overlay.clear();
+    return { status: "ok" };
   }
 
   function tick() {
@@ -907,6 +923,10 @@
   }
 
   function handleMessage(message, _sender, sendResponse) {
+    if (message?.type === "contextbubble:jump-to-bubble") {
+      sendResponse(jumpToBubble(message));
+      return false;
+    }
     if (message?.type !== "contextbubble:analyze-v2") return false;
     startAnalysis(message).then(sendResponse).catch((error) => {
       sendResponse({ error: error.message });

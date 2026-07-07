@@ -25,6 +25,45 @@ h1 {
   padding: 12px;
 }
 
+#bubble-jumps {
+  border-bottom: 1px solid #ddd;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.bubble-jumps-title {
+  margin: 0 0 8px;
+  color: #444;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bubble-jumps-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bubble-jump {
+  border: 1px solid #c8d8f0;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #1455a3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.bubble-jump:hover {
+  background: #ddeeff;
+}
+
+.bubble-jump:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .caption {
   border: 1px solid #ddd;
   border-radius: 8px;
