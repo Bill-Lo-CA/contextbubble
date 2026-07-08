@@ -70,9 +70,19 @@ function fillPairingCode(text, startIndex = 0) {
 async function checkBackendConnection() {
   const token = await sessionToken();
   if (!token) throw new Error("Pair the backend first.");
-  await contextbubbleBackend.fetchJson("/api/health", {
+  return contextbubbleBackend.fetchJson("/api/health", {
     headers: { "authorization": `Bearer ${token}` },
   });
+}
+
+function geminiStatusText(health) {
+  const gemini = health?.gemini || {};
+  if (!gemini.configured) return "Gemini: not configured.";
+  const parts = [`Gemini: ${gemini.status || "idle"}`];
+  if (gemini.model) parts.push(gemini.model);
+  if (gemini.last_error_code) parts.push(gemini.last_error_code);
+  if (gemini.last_http_status) parts.push(`HTTP ${gemini.last_http_status}`);
+  return `${parts.join(", ")}.`;
 }
 
 function contentScriptUnavailable(error) {
@@ -203,8 +213,8 @@ checkBackend.addEventListener("click", async () => {
   checkBackend.disabled = true;
   setStatus("Checking backend...");
   try {
-    await checkBackendConnection();
-    setStatus("Backend connected.");
+    const health = await checkBackendConnection();
+    setStatus(`Backend connected. ${geminiStatusText(health)}`);
   } catch (error) {
     setStatus(error.message);
   } finally {

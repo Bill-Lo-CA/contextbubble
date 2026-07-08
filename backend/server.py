@@ -8,7 +8,7 @@ import time
 import uuid
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
@@ -32,6 +32,7 @@ from auth import allowed_origin, pair_session, redact_secret_text, reset_pairing
 from db import connect_db, init_db
 from jobs import create_or_reuse_job, job_payload, preparation_events, resume_preparations
 from media import ExternalCommandError, fetch_youtube_subtitles
+from providers import gemini_status
 from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
 
@@ -417,6 +418,14 @@ async def health(authorization: str = Header("")):
         "api_version": API_VERSION,
         "agent_mode": AGENT_MODE,
         "gemini_model": GEMINI_MODEL if AGENT_MODE == "gemini" else None,
+        "gemini": {
+            **gemini_status(GEMINI_API_KEY, GEMINI_MODEL),
+            "active_for": {
+                "analysis": AGENT_MODE == "gemini",
+                "translation": TRANSLATION_MODE == "gemini",
+                "block_splitter": TRANSCRIPT_BLOCK_SPLITTER_MODE == "gemini",
+            },
+        },
         "translation_mode": TRANSLATION_MODE,
         "translation_model": TRANSLATION_MODEL if TRANSLATION_MODE == "ollama" else GEMINI_MODEL,
     })
