@@ -20,13 +20,14 @@ ENV_DOCKER_EXAMPLE = ROOT / ".env.docker.example"
 GITIGNORE = ROOT / ".gitignore"
 CHECK_COMPOSE = ROOT / "scripts" / "check-compose.sh"
 README = ROOT / "README.md"
+DOCS = ROOT / "docs"
 
 
 class DockerReadmeContractTest(unittest.TestCase):
     def setUp(self):
         self.readme = README.read_text()
-        self.docker = self.section("Run Backend with Docker")
-        self.native = self.section("Run Backend Natively")
+        self.docker = (DOCS / "setup-docker.md").read_text()
+        self.native = (DOCS / "setup-native.md").read_text()
 
     def section(self, heading):
         match = re.search(
@@ -37,8 +38,8 @@ class DockerReadmeContractTest(unittest.TestCase):
         return match.group(0)
 
     def test_docker_workflow_precedes_native_setup(self):
-        docker_heading = self.readme.index("## Run Backend with Docker")
-        native_heading = self.readme.index("## Run Backend Natively")
+        docker_heading = self.readme.index("[Docker Setup]")
+        native_heading = self.readme.index("[Native Developer Setup]")
 
         self.assertLess(docker_heading, native_heading)
         self.assertIn("python -m venv .venv", self.native)

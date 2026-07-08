@@ -94,7 +94,7 @@ function sendMessage(tabId, message) {
 async function injectContentScript(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
-    files: ["backendClient.js", "contentOverlay.js", "content.js"],
+    files: ["backendClient.js", "contentOverlay.js", "contentOwnerState.js", "contentStorage.js", "contentTranslations.js", "contentPreparation.js", "contentTimeline.js", "content.js"],
   });
 }
 
