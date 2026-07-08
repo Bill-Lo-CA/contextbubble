@@ -44,6 +44,7 @@
   let preparedTranscriptFetch = null;
   let lastPreparedTranscriptFetchAt = 0;
   let contextInvalidated = false;
+  let restoreOwnerPromise = null;
   let tickTimer;
 
   function getVideoId() {
@@ -117,6 +118,24 @@
     translationForceRefresh = Boolean(sessionOwner.forceRefresh);
     writeSessionOwner(analysisOwner);
     return true;
+  }
+
+  function scheduleRestoreAnalysisOwner(videoId) {
+    if (contextInvalidated || ownsVideo(videoId) || restoreOwnerPromise) return;
+    restoreOwnerPromise = restoreAnalysisOwner()
+      .then((restored) => {
+        if (restored && !contextInvalidated && getVideoId() === videoId && ownsVideo(videoId)) {
+          overlay.clear();
+        }
+      })
+      .catch((error) => {
+        if (!stopIfContextInvalidated(error)) {
+          console.warn("[ContextBubble] owner restore failed", error);
+        }
+      })
+      .finally(() => {
+        restoreOwnerPromise = null;
+      });
   }
 
   async function rememberPreparationJob(videoId, job) {
@@ -746,8 +765,7 @@
 
     if (!currentVideo || !videoId) return;
     if (!ownsVideo(videoId)) {
-      restoreAnalysisOwner();
-      if (analysisOwner) overlay.clear();
+      scheduleRestoreAnalysisOwner(videoId);
       return;
     }
     if (trackedVideo !== currentVideo) {

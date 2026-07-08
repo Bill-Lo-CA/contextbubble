@@ -72,6 +72,7 @@ scripts/check-compose.sh
 
 ## Documentation
 
+- [Docs Index](docs/README.md): all current docs.
 - [Docker Setup](docs/setup-docker.md): official local runtime path.
 - [Native Developer Setup](docs/setup-native.md): developer-only host setup.
 - [Demo](docs/demo.md): repeatable fixture-backed demo flow.

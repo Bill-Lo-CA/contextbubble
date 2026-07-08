@@ -1,7 +1,7 @@
-# Project Review Manual Checks
+# Manual Checks
 
-Use these checks after `scripts/check.sh` when validating the project-review
-owner-tab fixes in a loaded Chromium extension.
+Use these checks after `scripts/check.sh` when validating owner-tab, translation,
+and force-refresh behavior in a loaded Chromium extension.
 
 ## Multi-Tab Owner State
 

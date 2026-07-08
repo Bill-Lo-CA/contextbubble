@@ -5,7 +5,7 @@ import sys
 import tempfile
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
