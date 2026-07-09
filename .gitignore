@@ -1,5 +1,5 @@
 # ContextBubble local/spec workspace
-contextbubble-spec/
+/contextbubble-spec/
 
 # Backend local runtime state
 backend/.contextbubble/
@@ -34,8 +34,6 @@ client_secret*.json
 credentials*.json
 google-*.json
 *service-account*.json
-real-newsletter-fixtures/
-newsletter-fixtures.local/
 
 # Python caches and virtual environments
 __pycache__/

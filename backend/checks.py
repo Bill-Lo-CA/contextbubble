@@ -117,6 +117,9 @@ def self_check_media_helpers():
 def self_check_partial_asr_payload():
     timestamp = now_iso()
     with connect_db() as conn:
+        conn.execute("delete from asr_chunk_segments where job_id = ?", ("prepare-partial-asr",))
+        conn.execute("delete from asr_chunks where job_id = ?", ("prepare-partial-asr",))
+        conn.execute("delete from preparation_jobs where job_id = ?", ("prepare-partial-asr",))
         conn.execute(
             "insert or replace into videos values (?, ?, ?)",
             ("partial-asr-demo", timestamp, timestamp),
