@@ -16,6 +16,11 @@ fi
 "$PYTHON" backend/server.py --check
 node --check extension/backendClient.js
 node --check extension/contentOverlay.js
+node --check extension/contentOwnerState.js
+node --check extension/contentStorage.js
+node --check extension/contentTranslations.js
+node --check extension/contentPreparation.js
+node --check extension/contentTimeline.js
 node --check extension/content.js
 node --check extension/popup.js
 node --check extension/sidepanel.js
