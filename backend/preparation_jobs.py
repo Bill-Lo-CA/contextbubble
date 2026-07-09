@@ -6,7 +6,7 @@ from agents import analysis_result, semantic_sentence_entries
 from config import *
 from db import connect_db
 from job_events import add_preparation_event
-from transcripts import load_transcript
+from transcripts import load_transcript, sentence_entries
 
 
 STATE_LOCK = threading.Lock()
@@ -45,10 +45,22 @@ def job_payload(job_id, include_ready=True, include_transcript=False, include_se
     segments = transcript["segments"] if transcript else []
     if transcript and transcript.get("metadata"):
         payload["transcript_metadata"] = transcript["metadata"]
+    if not segments and payload.get("stage") in ("transcribing", "merging_transcript"):
+        from asr_pipeline import load_asr_chunk_segments
+        from media import merge_transcript_segments
+
+        partial_segments = merge_transcript_segments(load_asr_chunk_segments(job_id), payload.get("duration_seconds"))
+        if partial_segments:
+            segments = partial_segments
+            payload["partial_transcript"] = True
+            payload["transcript_source"] = payload.get("transcript_source") or "whisper_partial"
     if include_transcript and segments:
         payload["segments"] = segments
     if include_sentence_entries and segments:
-        payload["sentence_entries"] = semantic_sentence_entries(segments)
+        if payload.get("partial_transcript"):
+            payload["sentence_entries"] = sentence_entries(segments)
+        else:
+            payload["sentence_entries"] = semantic_sentence_entries(segments)
     if include_ready and payload["status"] == "ready":
         analysis = analysis_result(payload["analysis_id"])
         payload["bubbles"] = analysis["bubbles"] if analysis else []

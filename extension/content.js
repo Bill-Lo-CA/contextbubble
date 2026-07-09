@@ -256,7 +256,7 @@
       } finally {
         inFlightTranslations.delete(requestKey);
       }
-    });
+    })();
     return queued;
   }
 
@@ -349,14 +349,22 @@
 
   function updateSentenceTranslation(videoId, result, expectedText = "") {
     return updateVideoState(videoId, (state) => {
-      const entries = state.shownSentenceEntries || [];
-      const entry = entries.find((item) => item.id === result.id);
-      if (!entry) return;
-      if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return;
-      entry.translated_text = normalizeText(result.translated_text);
-      entry.translation_status = result.status || "translated";
-      entry.translation_reason = result.reason || "";
-      state.shownSentenceEntries = entries;
+      const applyTranslation = (entries) => {
+        const entry = entries.find((item) => item.id === result.id);
+        if (!entry) return false;
+        if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return false;
+        entry.translated_text = normalizeText(result.translated_text);
+        entry.translation_status = result.status || "translated";
+        entry.translation_reason = result.reason || "";
+        return true;
+      };
+      const shownEntries = state.shownSentenceEntries || [];
+      const allEntries = state.allSentenceEntries || [];
+      const updatedShown = applyTranslation(shownEntries);
+      const updatedAll = applyTranslation(allEntries);
+      if (updatedShown) state.shownSentenceEntries = shownEntries;
+      if (updatedAll) state.allSentenceEntries = allEntries;
+      return updatedShown || updatedAll;
     });
   }
 
@@ -451,6 +459,8 @@
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
     return updateVideoState(videoId, (state) => {
+      state.bubbles = [];
+      state.allSentenceEntries = [];
       state.captionLog = [];
       state.shownSentenceEntries = [];
       state.sentenceEntries = [];
@@ -486,6 +496,30 @@
       .sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
+  function mergeStoredSentenceEntry(entry, existing) {
+    const next = {
+      ...(existing || {}),
+      ...entry,
+      text: normalizeText(entry.text),
+      source_text: normalizeText(entry.source_text || entry.text),
+    };
+    const sameText = existing && normalizeText(existing.text) === next.text;
+    if (!sameText) {
+      next.translated_text = "";
+      next.translation_status = "";
+      next.translation_reason = "";
+    }
+    const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
+    if (translation) {
+      next.translated_text = normalizeText(translation.translated_text);
+      next.translation_status = translation.status || "translated";
+      next.translation_reason = translation.reason || "";
+    } else if (inFlightTranslations.has(sentenceTranslationKey(next)) && !next.translated_text) {
+      next.translation_status = "pending";
+    }
+    return next;
+  }
+
   function replacementSentenceEntry(entry, byId, entries) {
     const matched = byId.get(entry.id);
     if (matched) return matched;
@@ -500,42 +534,31 @@
 
   async function syncStoredSentenceEntries(videoId, entries, transcriptSource) {
     if (!entries.length) return;
-    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const slots = Math.max(0, TRANSLATION_LOOKAHEAD_BATCH - inFlightTranslations.size);
     const changedEntries = await updateVideoState(videoId, (state) => {
-      state.allSentenceEntries = entries;
+      const previousById = new Map((state.allSentenceEntries || []).map((entry) => [entry.id, entry]));
+      const mergedEntries = entries.map((entry) => mergeStoredSentenceEntry(entry, previousById.get(entry.id)));
+      const byId = new Map(mergedEntries.map((entry) => [entry.id, entry]));
+      state.allSentenceEntries = mergedEntries;
       state.transcriptSource = transcriptSource;
       const shown = state.shownSentenceEntries || [];
       const changed = [];
       state.shownSentenceEntries = shown
         .map((entry) => {
-          const replacement = replacementSentenceEntry(entry, byId, entries);
-          if (!replacement) return entry;
-          const next = {
-            ...entry,
-            ...replacement,
-            text: normalizeText(replacement.text),
-            source_text: normalizeText(replacement.source_text || replacement.text),
-          };
+          const replacement = replacementSentenceEntry(entry, byId, mergedEntries);
+          if (!replacement) return null;
+          const next = mergeStoredSentenceEntry(replacement, entry);
           if (normalizeText(entry.text) !== next.text) {
-            next.translated_text = "";
-            next.translation_status = "";
-            next.translation_reason = "";
-            const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
-            if (translation) {
-              next.translated_text = normalizeText(translation.translated_text);
-              next.translation_status = translation.status || "translated";
-              next.translation_reason = translation.reason || "";
-            } else {
-              if (inFlightTranslations.has(sentenceTranslationKey(next))) {
-                next.translation_status = "pending";
-              }
-              changed.push(next);
-            }
+            changed.push(next);
           }
           return next;
         })
+        .filter(Boolean)
         .sort((left, right) => left.start_seconds - right.start_seconds);
-      return changed;
+      const readyToTranslate = mergedEntries
+        .filter((entry) => !entry.translated_text)
+        .filter((entry) => canQueueTranslation(sentenceTranslationKey(entry), videoId));
+      return [...changed, ...readyToTranslate].slice(0, slots);
     });
     for (const entry of changedEntries || []) {
       requestSentenceTranslation(videoId, entry);
@@ -573,6 +596,7 @@
         appendTranscriptSegments(job.segments || []);
         appendBubbles(job.bubbles || []);
         await updateVideoState(videoId, (state) => {
+          state.bubbles = bubbles;
           state.transcriptSource = job.transcript_source;
           state.status = job.status === "ready" ? "Ready." : stageText(job);
         });
@@ -686,7 +710,7 @@
     loggedFallbackSegments = new Set();
     lastVideoTime = currentVideo?.currentTime || 0;
     overlay.clear();
-    resetTimelineDisplay(videoId);
+    if (forceReset) resetTimelineDisplay(videoId);
   }
 
   async function startAnalysis({ tabId, videoId: requestedVideoId, learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
@@ -724,8 +748,9 @@
       await rememberPreparationJob(videoId, job);
       const finalSentenceEntries = normalizedSentenceEntries(job.sentence_entries || []);
       await updateVideoState(videoId, (state) => {
+        state.bubbles = job.bubbles || [];
         state.jobId = job.job_id;
-        state.status = "Ready.";
+        state.status = stageText(job);
         state.captionLog = state.captionLog || [];
       });
       await syncStoredSentenceEntries(videoId, finalSentenceEntries, job.transcript_source);
@@ -757,6 +782,19 @@
     } finally {
       analysisRunning = false;
     }
+  }
+
+  function jumpToBubble(message) {
+    const currentVideo = findVideo();
+    const videoId = getVideoId();
+    if (!currentVideo || !videoId || message.videoId !== videoId) {
+      return { error: "Active YouTube video does not match this analysis." };
+    }
+    const startSeconds = Math.max(0, Number(message.startSeconds || 0));
+    shownKeys = new Set();
+    currentVideo.currentTime = Math.max(0, startSeconds - 0.2);
+    overlay.clear();
+    return { status: "ok" };
   }
 
   function tick() {
@@ -806,6 +844,10 @@
   }
 
   function handleMessage(message, _sender, sendResponse) {
+    if (message?.type === "contextbubble:jump-to-bubble") {
+      sendResponse(jumpToBubble(message));
+      return false;
+    }
     if (message?.type !== "contextbubble:analyze-v2") return false;
     startAnalysis(message).then(sendResponse).catch((error) => {
       sendResponse({ error: error.message });

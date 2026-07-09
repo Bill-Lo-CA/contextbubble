@@ -180,6 +180,8 @@ def concept_agent(segments, learner_level):
 
 def window_note(window, learner_level):
     candidates = llm_concept_agent(window, learner_level) if AGENT_MODE in ("gemini", "ollama") else heuristic_concept_agent(window, learner_level)
+    if not candidates and AGENT_MODE in ("gemini", "ollama"):
+        candidates = heuristic_concept_agent(window, learner_level)
     return {
         "window_start": window[0]["start_seconds"],
         "window_end": window[-1]["end_seconds"],
