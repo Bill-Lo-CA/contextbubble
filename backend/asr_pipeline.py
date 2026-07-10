@@ -5,7 +5,8 @@ import threading
 from config import *
 from db import connect_db
 from job_events import add_preparation_event
-from media import ExternalCommandError, create_chunks, download_full_audio, get_youtube_duration, media_duration, merge_transcript_segments, normalize_audio, transcribe_audio_chunk
+from asr_provider import whisper_cpp
+from media import ExternalCommandError, create_chunks, download_full_audio, get_youtube_duration, media_duration, merge_transcript_segments, normalize_audio
 from preparation_jobs import update_job
 from transcripts import store_transcript
 
@@ -118,7 +119,7 @@ def run_whole_video_asr(job_id, video_id):
             update_job(job_id, stage="transcribing", progress=0.2 + 0.55 * (completed / max(1, len(chunks))))
             add_preparation_event(job_id, "chunk_started", "transcribing", {"chunk_index": chunk["chunk_index"]})
             try:
-                segments = transcribe_audio_chunk(normalized_audio, chunk, str(job_media_dir), job_id)
+                segments = whisper_cpp.transcribe(normalized_audio, chunk, str(job_media_dir), job_id)
             except ExternalCommandError as error:
                 mark_asr_chunk_failed(job_id, chunk["chunk_index"], error.error_code)
                 add_preparation_event(job_id, "chunk_failed", "transcribing", {"chunk_index": chunk["chunk_index"], "error_code": error.error_code})
@@ -136,7 +137,7 @@ def run_whole_video_asr(job_id, video_id):
         merged = merge_transcript_segments(all_segments, duration)
         if not merged:
             raise RuntimeError("TRANSCRIPT_MERGE_FAILED")
-        transcript = store_transcript(video_id, f"{video_id}.whole-video.whisper.vtt", source="whisper_asr", segments=merged, metadata={"provenance": "whisper_asr"})
+        transcript = store_transcript(video_id, f"{video_id}.whole-video.whisper.vtt", source="whisper_asr", segments=merged, metadata={"provenance": "whisper_asr", **whisper_cpp.metadata()})
         add_preparation_event(job_id, "transcript_merged", "merging_transcript", {"segment_count": len(merged)})
         shutil.rmtree(job_media_dir, ignore_errors=True)
         return transcript, "whisper", duration

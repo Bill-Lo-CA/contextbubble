@@ -2,18 +2,8 @@
 set -eu
 export CONTEXTBUBBLE_SKIP_DOTENV=1
 
-if [ -x ".venv/bin/python" ]; then
-  PYTHON=".venv/bin/python"
-elif [ -n "${PYTHON:-}" ]; then
-  :
-elif command -v python >/dev/null 2>&1; then
-  PYTHON="python"
-else
-  PYTHON="python3"
-fi
-
-"$PYTHON" -m unittest discover -s backend/tests -v
-"$PYTHON" backend/server.py --check
+uv run --locked python -m unittest discover -s backend/tests -v
+uv run --locked python backend/server.py --check
 node --check extension/backendClient.js
 node --check extension/contentOverlay.js
 node --check extension/contentOwnerState.js

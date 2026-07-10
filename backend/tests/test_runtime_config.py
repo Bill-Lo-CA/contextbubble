@@ -162,7 +162,9 @@ class RuntimeConfigTests(unittest.TestCase):
                 load_config()
 
     def test_transcription_forwards_cpu_and_language_settings(self):
-        import media
+        from asr_provider import whisper_cpp
+        import asr_provider
+        import config
 
         chunk = {"chunk_index": 0, "start_seconds": 0, "end_seconds": 10}
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -171,16 +173,16 @@ class RuntimeConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
-                mock.patch.object(media, "WHISPER_NO_GPU", True),
-                mock.patch.object(media, "WHISPER_LANGUAGE", "zh"),
-                mock.patch.object(media, "run_command") as run_command,
+                mock.patch.object(asr_provider, "run_command") as run_command,
             ):
-                media.transcribe_audio_chunk("audio.wav", chunk, tmpdir, "job-1")
+                settings = config.get_settings()
+                with config.settings_override(__import__("dataclasses").replace(settings, whisper_no_gpu=True, whisper_language="zh")):
+                    whisper_cpp.transcribe("audio.wav", chunk, tmpdir, "job-1")
 
         whisper_command = next(
             call.args[0]
             for call in run_command.call_args_list
-            if call.args[0][0] == media.WHISPER_CMD
+            if call.args[0][0] == config.get_settings().whisper_cmd
         )
         self.assertIn("-ng", whisper_command)
         language_index = whisper_command.index("-l")

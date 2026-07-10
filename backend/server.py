@@ -1,18 +1,20 @@
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
 import tempfile
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
+import config
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
     validate_config()
     with tempfile.TemporaryDirectory(prefix="contextbubble-check-") as tmpdir:
-        set_data_dir(tmpdir)
-        self_check()
+        with config.settings_override(replace(config.get_settings(), data_dir=Path(tmpdir))):
+            self_check()
     print("ok")
     raise SystemExit(0)
 
@@ -24,10 +26,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
 import auth
-from agents import AgentProviderError, analysis_result, run_analysis_for_transcript
+from analysis_store import analysis_result, run_analysis_for_transcript
 from auth import allowed_origin, pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from db import connect_db, init_db
-from jobs import create_or_reuse_job, job_payload, preparation_events, resume_preparations
+from job_events import preparation_events
+from preparation_jobs import create_or_reuse_job, job_payload, resume_preparations
+from providers import AgentProviderError
 from media import ExternalCommandError, fetch_youtube_subtitles
 from providers import gemini_status
 from transcript_quality import caption_source_qc

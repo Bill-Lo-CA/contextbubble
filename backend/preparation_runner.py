@@ -1,4 +1,4 @@
-from agents import run_analysis_for_transcript
+from analysis_store import run_analysis_for_transcript
 from auth import redact_secret_text
 from caption_pipeline import transcript_for_job
 from db import connect_db

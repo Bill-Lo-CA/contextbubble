@@ -1,9 +1,8 @@
 # Default-deny the build context, then admit only image inputs.
 *
 !Dockerfile
-!requirements.txt
-!requirements.lock
-!requirements-yt-dlp.lock
+!pyproject.toml
+!uv.lock
 !backend/
 !backend/**
 !docker/

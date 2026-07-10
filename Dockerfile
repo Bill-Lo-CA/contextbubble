@@ -53,11 +53,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt ./requirements.txt
-COPY requirements.lock ./requirements.lock
-COPY requirements-yt-dlp.lock ./requirements-yt-dlp.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock \
-    && python -m pip install --no-cache-dir --require-hashes -r requirements-yt-dlp.lock
+COPY --from=ghcr.io/astral-sh/uv:0.11.22 /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
 
 COPY backend ./backend
 COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli
@@ -77,6 +75,7 @@ RUN groupadd --gid 10001 contextbubble \
 
 ENV PYTHONUNBUFFERED=1 \
     HOME=/home/contextbubble \
+    PATH=/app/.venv/bin:$PATH \
     TMPDIR=/tmp/contextbubble \
     XDG_CACHE_HOME=/tmp/contextbubble/cache \
     DENO_DIR=/tmp/contextbubble/deno

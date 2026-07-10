@@ -1,5 +1,6 @@
 import os
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 import stat
@@ -21,7 +22,6 @@ from db import connect_db, init_db
 
 class AuthPersistenceTests(unittest.TestCase):
     def setUp(self):
-        self.original_data_dir = config.DATA_DIR
         self.original_auth_state = (
             auth.API_TOKEN,
             auth.PAIRING_CODE,
@@ -30,7 +30,9 @@ class AuthPersistenceTests(unittest.TestCase):
             list(auth.PAIRING_ATTEMPTS),
         )
         self.tempdir = tempfile.TemporaryDirectory()
-        config.set_data_dir(self.tempdir.name)
+        self.settings = replace(config.get_settings(), data_dir=Path(self.tempdir.name))
+        self.settings_context = config.settings_override(self.settings)
+        self.settings_context.__enter__()
         init_db()
         with connect_db() as conn:
             conn.execute("delete from session_tokens")
@@ -45,7 +47,7 @@ class AuthPersistenceTests(unittest.TestCase):
             attempts,
         ) = self.original_auth_state
         auth.PAIRING_ATTEMPTS[:] = attempts
-        config.set_data_dir(self.original_data_dir)
+        self.settings_context.__exit__(None, None, None)
         self.tempdir.cleanup()
 
     def test_generated_admin_token_is_private_and_reused(self):

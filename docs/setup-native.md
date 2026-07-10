@@ -5,7 +5,8 @@ without Docker. For normal local use, use Docker Compose.
 
 ## Requirements
 
-- Python 3
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
 - Chromium, Chrome, or Brave
 - Node.js, only for `node --check` validation
 - `ffmpeg`
@@ -52,13 +53,13 @@ The backend loads `.env` from the repository root and expands paths like
 over `.env`. Runtime state goes under `CONTEXTBUBBLE_DATA_DIR`; that directory
 is kept at mode `0700`, and token/environment files are kept at `0600`.
 
-`.venv` is optional by use case:
+`uv` manages the project virtual environment automatically:
 
-| Use case | `.venv` needed? |
+| Use case | `uv` needed? |
 |---|---:|
 | Normal Docker runtime | No |
 | Native backend runtime | Yes |
-| Local tests/checks | Recommended |
+| Local tests/checks | Yes |
 | VS Code autocomplete/debugging | Recommended |
 | Formal user install | No |
 
@@ -93,10 +94,8 @@ $HOME/tools/whisper.cpp/models/ggml-base.en.bin
 From the repo root:
 
 ```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-python backend/server.py
+uv sync --locked
+uv run python backend/server.py
 ```
 
 The backend listens on `127.0.0.1` and prints a short pairing code. A generated
