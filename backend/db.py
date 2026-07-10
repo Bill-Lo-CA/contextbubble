@@ -1,12 +1,13 @@
 import sqlite3
 from contextlib import closing
 
-from config import *
+import config
 
 
 def connect_db():
-    ensure_private_dir(DATA_DIR)
-    conn = sqlite3.connect(DB_FILE, timeout=5)
+    settings = config.get_settings()
+    config.ensure_private_dir(settings.data_dir)
+    conn = sqlite3.connect(settings.db_file, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma journal_mode=WAL")
     conn.execute("pragma busy_timeout = 5000")
@@ -165,9 +166,9 @@ def init_db():
         """)
         conn.execute(
             "insert or ignore into schema_migrations values (?, ?)",
-            ("2026-07-project-review-t002-t005", now_iso()),
+            ("2026-07-project-review-t002-t005", config.now_iso()),
         )
         conn.execute(
             "insert or ignore into schema_migrations values (?, ?)",
-            ("2026-07-docker-session-persistence", now_iso()),
+            ("2026-07-docker-session-persistence", config.now_iso()),
         )

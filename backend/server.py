@@ -1,18 +1,20 @@
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
 import tempfile
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
+import config
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
     validate_config()
     with tempfile.TemporaryDirectory(prefix="contextbubble-check-") as tmpdir:
-        set_data_dir(tmpdir)
-        self_check()
+        with config.settings_override(replace(config.get_settings(), data_dir=Path(tmpdir))):
+            self_check()
     print("ok")
     raise SystemExit(0)
 
