@@ -2,18 +2,17 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 
 from auth import redact_secret_text
-from config import *
-from db import connect_db
+import config
+from config import CHUNK_OVERLAP_SECONDS, DEFAULT_CHUNK_SECONDS, validate_video_id
 from transcripts import add_segment_ids, parse_subtitles
 
 
 def command_error(prefix, error):
-    return redact_secret_text(f"{prefix}. Check {JOB_LOG_FILE} for details.")
+    return redact_secret_text(f"{prefix}. Check {config.get_settings().job_log_file} for details.")
 class ExternalCommandError(RuntimeError):
     def __init__(self, stage, command, error, chunk_index=None):
         self.stage = stage
@@ -61,7 +60,8 @@ class ExternalCommandError(RuntimeError):
             return "WHISPER_FAILED"
         return "EXTERNAL_TOOL_FAILED"
 def log_job(job_id, stage, command, error=None, chunk_index=None, retry_count=0):
-    ensure_private_dir(DATA_DIR)
+    settings = config.get_settings()
+    config.ensure_private_dir(settings.data_dir)
     tail = ""
     code = None
     if error is not None:
@@ -71,7 +71,7 @@ def log_job(job_id, stage, command, error=None, chunk_index=None, retry_count=0)
             stderr = stderr.decode("utf-8", "replace")
         tail = redact_secret_text(str(stderr))[-2000:]
     entry = {
-        "time": now_iso(),
+        "time": config.now_iso(),
         "job_id": job_id,
         "stage": stage,
         "chunk_index": chunk_index,
@@ -80,7 +80,7 @@ def log_job(job_id, stage, command, error=None, chunk_index=None, retry_count=0)
         "retry_count": retry_count,
         "stderr_tail": tail,
     }
-    with open(JOB_LOG_FILE, "a", encoding="utf-8") as file:
+    with open(settings.job_log_file, "a", encoding="utf-8") as file:
         file.write(json.dumps(entry) + "\n")
 def run_command(args, job_id, stage, timeout, chunk_index=None):
     try:
@@ -98,7 +98,7 @@ def fetch_youtube_subtitles(video_id, job_id="caption"):
     validate_video_id(video_id)
     with tempfile.TemporaryDirectory(prefix="contextbubble-subs-") as tmpdir:
         run_command([
-            YTDLP_CMD,
+            config.get_settings().ytdlp_cmd,
             "--write-subs",
             "--write-auto-subs",
             "--sub-langs", "en.*",
@@ -126,7 +126,7 @@ def fetch_youtube_subtitles(video_id, job_id="caption"):
     raise FileNotFoundError("NO_USABLE_CAPTIONS")
 def get_youtube_duration(video_id, job_id):
     result = run_command([
-        YTDLP_CMD,
+        config.get_settings().ytdlp_cmd,
         "--no-download",
         "--print", "duration",
         f"https://www.youtube.com/watch?v={video_id}",
@@ -139,7 +139,7 @@ def parse_duration_output(stdout):
         raise RuntimeError("VIDEO_METADATA_FAILED") from error
 def media_duration(path, job_id):
     result = run_command([
-        FFPROBE_CMD,
+        config.get_settings().ffprobe_cmd,
         "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
@@ -152,7 +152,7 @@ def media_duration(path, job_id):
 def download_full_audio(video_id, directory, job_id):
     audio_base = os.path.join(directory, "%(id)s")
     run_command([
-        YTDLP_CMD,
+        config.get_settings().ytdlp_cmd,
         "-f", "bestaudio/best",
         "-x",
         "--audio-format", "wav",
@@ -165,7 +165,7 @@ def download_full_audio(video_id, directory, job_id):
     raise FileNotFoundError("YTDLP_AUDIO_FAILED")
 def normalize_audio(audio_path, output_path, job_id):
     run_command([
-        FFMPEG_CMD,
+        config.get_settings().ffmpeg_cmd,
         "-y",
         "-i", audio_path,
         "-ar", "16000",

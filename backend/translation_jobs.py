@@ -7,7 +7,6 @@ import uuid
 from starlette.concurrency import run_in_threadpool
 
 from auth import redact_secret_text
-from config import TRANSLATION_MODEL
 from db import connect_db
 from providers import AgentProviderError
 from translation_agents import translate_segment

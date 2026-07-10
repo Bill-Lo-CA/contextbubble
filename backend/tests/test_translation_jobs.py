@@ -12,7 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import config
-from db import connect_db, init_db
+from db import init_db
 import translation_jobs
 
 

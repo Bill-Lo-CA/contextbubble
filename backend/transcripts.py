@@ -3,7 +3,7 @@ import html
 import json
 import re
 
-from config import *
+from config import now_iso
 from db import connect_db
 
 

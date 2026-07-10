@@ -1,5 +1,3 @@
-import re
-
 from config import GEMINI_API_KEY, GEMINI_MODEL, OLLAMA_BASE_URL, TRANSLATION_MODE, TRANSLATION_MODEL
 from providers import AgentProviderError, gemini_generate, ollama_generate
 from translation_cache import save_translation_cache, translation_decision

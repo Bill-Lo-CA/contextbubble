@@ -1,5 +1,5 @@
 from asr_pipeline import run_whole_video_asr
-from config import *
+from config import DEMO_VIDEO_IDS, demo_fixture_path
 from job_events import add_preparation_event
 from media import ExternalCommandError, fetch_youtube_subtitles
 from preparation_jobs import update_job

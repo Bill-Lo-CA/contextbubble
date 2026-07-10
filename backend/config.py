@@ -1,7 +1,7 @@
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -155,9 +155,3 @@ def __getattr__(name):
         "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v2", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
     if name in aliases: return aliases[name]
     raise AttributeError(name)
-
-
-__all__ = [
-    "Settings", "expand_config_path", "ensure_private_dir", "ensure_private_file", "load_settings", "get_settings", "settings_override", "now_iso", "iso_from_timestamp", "validate_config", "validate_runtime_for_asr", "validate_video_id", "demo_fixture_path",
-    "DATA_DIR", "DB_FILE", "JOB_LOG_FILE", "MEDIA_DIR", "YTDLP_CMD", "FFMPEG_CMD", "FFPROBE_CMD", "WHISPER_CMD", "WHISPER_MODEL", "WHISPER_NO_GPU", "VALIDATE_ASR_ON_START", "WHISPER_LANGUAGE", "BACKEND_HOST", "BACKEND_PORT", "GEMINI_API_KEY", "GEMINI_MODEL", "OLLAMA_BASE_URL", "OLLAMA_MODEL", "AGENT_MODE", "TRANSLATION_MODE", "TRANSLATION_MODEL", "TRANSCRIPT_BLOCK_SPLITTER_MODE", "TRANSCRIPT_BLOCK_SPLITTER_MODEL", "DEMO_VIDEO_IDS", "API_VERSION", "ANALYSIS_VERSION", "LEARNER_LEVELS", "AGENT_MODES", "TRANSLATION_PROMPT_VERSION", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION", "DEFAULT_CHUNK_SECONDS", "CHUNK_OVERLAP_SECONDS", "MAX_SUBTITLE_BYTES", "MAX_JSON_BYTES", "MAX_BEARER_TOKEN_BYTES",
-]

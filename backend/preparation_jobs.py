@@ -4,7 +4,7 @@ import time
 
 from analysis_store import analysis_result
 from semantic_splitter import semantic_sentence_entries
-from config import *
+from config import ANALYSIS_VERSION, LEARNER_LEVELS, now_iso, validate_video_id
 from db import connect_db
 from job_events import add_preparation_event
 from transcripts import load_transcript, sentence_entries
