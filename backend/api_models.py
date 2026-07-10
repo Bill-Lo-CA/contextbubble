@@ -30,3 +30,12 @@ class AnalysisRequest(BaseModel):
     learner_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
     transcript_id: str = Field(max_length=255)
     force_refresh: bool = False
+
+
+class TranslationRequest(BaseModel):
+    id: str = Field(default="", max_length=255)
+    source_text: str = Field(default="", max_length=32_768)
+    context_before: str = Field(default="", max_length=32_768)
+    context_after: str = Field(default="", max_length=32_768)
+    target_language: str = Field(default="zh-TW", max_length=32)
+    force_refresh: bool = False

@@ -35,6 +35,9 @@ class FakeFastAPI:
     def route(self, *args, **kwargs):
         return lambda function: function
 
+    def include_router(self, _router):
+        pass
+
     middleware = route
     exception_handler = route
     post = route
@@ -44,6 +47,7 @@ class FakeFastAPI:
 def server_dependency_modules():
     fastapi = types.ModuleType("fastapi")
     fastapi.FastAPI = FakeFastAPI
+    fastapi.APIRouter = FakeFastAPI
     fastapi.Header = lambda default="": default
     fastapi.Request = type("Request", (), {})
 
