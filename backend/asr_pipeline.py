@@ -30,7 +30,7 @@ def mark_asr_chunk_completed(job_id, chunk_index, segments):
     with connect_db() as conn:
         conn.execute("delete from asr_chunk_segments where job_id = ? and chunk_index = ?", (job_id, chunk_index))
         conn.executemany(
-            "insert into asr_chunk_segments values (?, ?, ?, ?, ?, ?)",
+            "insert into asr_chunk_segments (job_id, chunk_index, segment_index, start_seconds, end_seconds, text) values (?, ?, ?, ?, ?, ?)",
             [
                 (job_id, chunk_index, index, segment["start_seconds"], segment["end_seconds"], segment["text"])
                 for index, segment in enumerate(segments)
@@ -90,7 +90,7 @@ def run_whole_video_asr(job_id, video_id):
         timestamp = now_iso()
         with connect_db() as conn:
             conn.executemany(
-                "insert or ignore into asr_chunks values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert or ignore into asr_chunks (job_id, chunk_index, start_seconds, end_seconds, status, attempt_count, segment_count, error_code, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (job_id, chunk["chunk_index"], chunk["start_seconds"], chunk["end_seconds"], "pending", 0, 0, None, timestamp)
                     for chunk in chunks

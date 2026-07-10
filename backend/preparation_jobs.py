@@ -104,8 +104,8 @@ def create_job_row(conn, video_id, learner_level, source_policy, force_refresh):
     job_id = f"prepare-{hashlib.sha256(seed.encode()).hexdigest()[:12]}"
     timestamp = now_iso()
     conn.execute(
-        "insert or replace into videos values (?, coalesce((select created_at from videos where video_id = ?), ?), ?)",
-        (video_id, video_id, timestamp, timestamp),
+        "insert into videos (video_id, created_at, updated_at) values (?, ?, ?) on conflict(video_id) do update set updated_at = excluded.updated_at",
+        (video_id, timestamp, timestamp),
     )
     conn.execute(
         "insert into preparation_jobs (job_id, video_id, learner_level, source_policy, status, stage, force_refresh, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",

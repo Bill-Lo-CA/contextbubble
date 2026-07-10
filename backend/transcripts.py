@@ -101,8 +101,8 @@ def store_transcript(video_id, filename, content="", source="upload", segments=N
     created_at = now_iso()
     with connect_db() as conn:
         conn.execute(
-            "insert or replace into videos (video_id, created_at, updated_at) values (?, coalesce((select created_at from videos where video_id = ?), ?), ?)",
-            (video_id, video_id, created_at, created_at),
+            "insert into videos (video_id, created_at, updated_at) values (?, ?, ?) on conflict(video_id) do update set updated_at = excluded.updated_at",
+            (video_id, created_at, created_at),
         )
         conn.execute(
             """
@@ -114,7 +114,7 @@ def store_transcript(video_id, filename, content="", source="upload", segments=N
         )
         conn.execute("delete from transcript_segments where transcript_id = ?", (transcript_id,))
         conn.executemany(
-            "insert into transcript_segments values (?, ?, ?, ?, ?)",
+            "insert into transcript_segments (transcript_id, segment_id, start_seconds, end_seconds, text) values (?, ?, ?, ?, ?)",
             [
                 (transcript_id, segment["id"], segment["start_seconds"], segment["end_seconds"], segment["text"])
                 for segment in segments
