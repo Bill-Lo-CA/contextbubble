@@ -1,0 +1,13 @@
+[project]
+name = "contextbubble"
+version = "0.1.0"
+description = "Local-first YouTube learning context extension and backend"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.139.0",
+    "uvicorn==0.50.0",
+    "yt-dlp[default,deno,pin,pin-deno]==2026.7.4",
+]
+
+[tool.uv]
+package = false

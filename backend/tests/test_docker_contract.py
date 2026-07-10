@@ -11,9 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
-REQUIREMENTS = ROOT / "requirements.txt"
-REQUIREMENTS_LOCK = ROOT / "requirements.lock"
-YTDLP_REQUIREMENTS_LOCK = ROOT / "requirements-yt-dlp.lock"
+PYPROJECT = ROOT / "pyproject.toml"
+UV_LOCK = ROOT / "uv.lock"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 ENV_DOCKER_EXAMPLE = ROOT / ".env.docker.example"
@@ -42,7 +41,7 @@ class DockerReadmeContractTest(unittest.TestCase):
         native_heading = self.readme.index("[Native Developer Setup]")
 
         self.assertLess(docker_heading, native_heading)
-        self.assertIn("python -m venv .venv", self.native)
+        self.assertIn("uv sync --locked", self.native)
 
     def test_docker_quick_start_keeps_logs_in_another_terminal(self):
         self.assertIn("docker compose up --build", self.docker)
@@ -460,59 +459,13 @@ class DockerImageContractTest(unittest.TestCase):
         self.assertIn("-DGGML_NATIVE=OFF", cmake_options)
         self.assertIn('"$@"', cmake_options)
 
-    def test_dockerfile_installs_pinned_full_youtube_runtime(self):
+    def test_dockerfile_installs_locked_uv_project(self):
         dockerfile = DOCKERFILE.read_text()
 
-        self.assertIn("COPY requirements-yt-dlp.lock ./requirements-yt-dlp.lock", dockerfile)
-        self.assertIn(
-            "python -m pip install --no-cache-dir --require-hashes "
-            "-r requirements-yt-dlp.lock",
-            dockerfile,
-        )
-        self.assertNotIn("yt-dlp[default", dockerfile)
-        self.assertNotRegex(dockerfile, r"pip install[^\n]*yt-dlp(?:==|\[)")
-
-    def test_youtube_runtime_lock_pins_extras_and_transitives_with_hashes(self):
-        self.assertTrue(YTDLP_REQUIREMENTS_LOCK.is_file())
-        lock = YTDLP_REQUIREMENTS_LOCK.read_text()
-
-        self.assertRegex(lock, r"(?m)^#    uv \d+\.\d+\.\d+ pip compile .+$")
-        self.assertEqual(
-            (ROOT / "requirements-yt-dlp.in").read_text().strip(),
-            "yt-dlp[default,deno,pin,pin-deno]==2026.7.4",
-        )
-        self.assertIn("yt-dlp==2026.7.4", lock)
-        self.assertRegex(lock, r"(?m)^deno==")
-        self.assertRegex(lock, r"(?m)^yt-dlp-ejs==")
-        package_blocks = re.split(r"(?m)(?=^[a-zA-Z0-9])", lock)[1:]
-        self.assertGreater(len(package_blocks), 3)
-        self.assertTrue(
-            all(re.search(r"(?m)^    --hash=sha256:[0-9a-f]{64}(?: \\)?$", block) for block in package_blocks)
-        )
-
-    def test_application_dependencies_are_pinned(self):
-        requirements = REQUIREMENTS.read_text().splitlines()
-
-        self.assertIn("fastapi==0.139.0", requirements)
-        self.assertIn("uvicorn==0.50.0", requirements)
-
-    def test_application_lock_pins_transitives_with_sha256_hashes(self):
-        self.assertTrue(REQUIREMENTS_LOCK.is_file(), "requirements.lock must exist")
-        lock = REQUIREMENTS_LOCK.read_text()
-
-        self.assertIn("fastapi==0.139.0", lock)
-        self.assertIn("uvicorn==0.50.0", lock)
-        self.assertRegex(lock, r"(?m)^#    uv \d+\.\d+\.\d+ pip compile .+$")
-        package_lines = [
-            line for line in lock.splitlines() if line and not line[0].isspace() and not line.startswith("#")
-        ]
-        self.assertGreater(len(package_lines), 2)
-        self.assertTrue(all("==" in line for line in package_lines))
-        package_blocks = re.split(r"(?m)(?=^[a-zA-Z0-9])", lock)[1:]
-        self.assertEqual(len(package_blocks), len(package_lines))
-        self.assertTrue(
-            all(re.search(r"(?m)^    --hash=sha256:[0-9a-f]{64}(?: \\)?$", block) for block in package_blocks)
-        )
+        self.assertIn("COPY pyproject.toml uv.lock ./", dockerfile)
+        self.assertIn("uv sync --locked --no-dev", dockerfile)
+        self.assertIn("yt-dlp[default,deno,pin,pin-deno]", PYPROJECT.read_text())
+        self.assertTrue(UV_LOCK.is_file())
 
     def test_dockerfile_uses_supported_patch_updateable_base_tags(self):
         dockerfile = DOCKERFILE.read_text()
@@ -534,20 +487,14 @@ class DockerImageContractTest(unittest.TestCase):
     def test_dockerfile_copies_application_and_executables_to_runtime_paths(self):
         dockerfile = DOCKERFILE.read_text()
 
-        lock_copy_instruction = "COPY requirements.lock ./requirements.lock"
-        lock_install_instruction = (
-            "RUN python -m pip install --no-cache-dir --require-hashes "
-            "-r requirements.lock"
-        )
+        lock_copy_instruction = "COPY pyproject.toml uv.lock ./"
+        lock_install_instruction = "RUN uv sync --locked --no-dev"
         self.assertIn(lock_copy_instruction, dockerfile)
         self.assertIn(lock_install_instruction, dockerfile)
-        requirements_copy = dockerfile.index("COPY requirements.txt ./requirements.txt")
         lock_copy = dockerfile.index(lock_copy_instruction)
         requirements_install = dockerfile.index(lock_install_instruction)
         backend_copy = dockerfile.index("COPY backend ./backend")
-        self.assertLess(requirements_copy, lock_copy)
         self.assertLess(lock_copy, requirements_install)
-        self.assertLess(requirements_copy, requirements_install)
         self.assertLess(requirements_install, backend_copy)
         self.assertIn(
             "COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli",
@@ -590,9 +537,8 @@ class DockerImageContractTest(unittest.TestCase):
         self.assertEqual(lines[0], "*")
         expected_inclusions = {
             "!Dockerfile",
-            "!requirements.txt",
-            "!requirements.lock",
-            "!requirements-yt-dlp.lock",
+            "!pyproject.toml",
+            "!uv.lock",
             "!backend/",
             "!backend/**",
             "!docker/",
