@@ -184,34 +184,6 @@ def create_chunks(duration_seconds, chunk_seconds=DEFAULT_CHUNK_SECONDS, overlap
         index += 1
         start += step
     return chunks
-def transcribe_audio_chunk(audio_path, chunk, tmpdir, job_id):
-    chunk_path = os.path.join(tmpdir, f"chunk-{chunk['chunk_index']:04d}.wav")
-    run_command([
-        FFMPEG_CMD,
-        "-y",
-        "-ss", str(chunk["start_seconds"]),
-        "-to", str(chunk["end_seconds"]),
-        "-i", audio_path,
-        "-ar", "16000",
-        "-ac", "1",
-        "-c:a", "pcm_s16le",
-        chunk_path,
-    ], job_id, "transcribing", 120, chunk["chunk_index"])
-    transcript_base = os.path.join(tmpdir, f"chunk-{chunk['chunk_index']:04d}")
-    whisper_args = [
-        WHISPER_CMD,
-        "-m", WHISPER_MODEL,
-        "-f", chunk_path,
-        "-l", WHISPER_LANGUAGE,
-        "-ovtt",
-        "-of", transcript_base,
-        "-np",
-    ]
-    if WHISPER_NO_GPU:
-        whisper_args.append("-ng")
-    run_command(whisper_args, job_id, "transcribing", 900, chunk["chunk_index"])
-    with open(f"{transcript_base}.vtt", encoding="utf-8") as file:
-        return parse_subtitles(file.read(), chunk["start_seconds"])
 def merge_token_overlap(left, right):
     left_tokens = left.split()
     right_tokens = right.split()
