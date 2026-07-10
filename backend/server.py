@@ -21,11 +21,13 @@ if "--check" in sys.argv:
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
 import auth
+from api_models import AnalysisRequest, PairRequest, PrepareVideoRequest, SubtitleUploadRequest, TranscriptRequest
 from analysis_store import analysis_result, run_analysis_for_transcript
 from auth import allowed_origin, pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from db import connect_db, init_db
@@ -74,6 +76,16 @@ async def read_body(request):
         limit = MAX_SUBTITLE_BYTES if request.url.path == "/api/subtitles" else MAX_JSON_BYTES
         return await request_json(request, limit)
     except (ValueError, json.JSONDecodeError) as exc:
+        return error("BAD_REQUEST", str(exc), 400)
+
+
+async def read_model(request, model):
+    body = await read_body(request)
+    if isinstance(body, JSONResponse):
+        return body
+    try:
+        return model.model_validate(body)
+    except ValidationError as exc:
         return error("BAD_REQUEST", str(exc), 400)
 
 
@@ -128,11 +140,11 @@ async def http_exception_handler(request, exc):
 
 @app.post("/api/pair")
 async def pair(request: Request):
-    body = await read_body(request)
+    body = await read_model(request, PairRequest)
     if isinstance(body, JSONResponse):
         return body
     try:
-        token, expires_at = pair_session(body.get("pairing_code", ""))
+        token, expires_at = pair_session(body.pairing_code)
         return ok({
             "session_token": token,
             "expires_at": iso_from_timestamp(expires_at),
@@ -160,15 +172,13 @@ async def prepare_video(video_id: str, request: Request, authorization: str = He
     auth_error = require_auth(authorization)
     if auth_error:
         return auth_error
-    body = await read_body(request)
+    body = await read_model(request, PrepareVideoRequest)
     if isinstance(body, JSONResponse):
         return body
     try:
         job = create_or_reuse_job(
             video_id,
-            body.get("learner_level", "beginner"),
-            bool(body.get("force_refresh")),
-            bool(body.get("demo_mode")),
+            body.learner_level, body.force_refresh, body.demo_mode,
         )
         return json_response({"api_version": API_VERSION, **job})
     except ValueError as exc:
@@ -180,18 +190,18 @@ async def subtitle_upload(request: Request, authorization: str = Header("")):
     auth_error = require_auth(authorization)
     if auth_error:
         return auth_error
-    body = await read_body(request)
+    body = await read_model(request, SubtitleUploadRequest)
     if isinstance(body, JSONResponse):
         return body
-    video_id = body.get("video_id", "unknown")
+    video_id = body.video_id
     try:
         validate_video_id(video_id)
     except ValueError as exc:
         return json_response({"error": str(exc), "error_code": "BAD_REQUEST"}, 400)
-    content = body.get("content", "")
+    content = body.content
     if len(content.encode()) > MAX_SUBTITLE_BYTES:
         return json_response({"error": "subtitle file too large", "error_code": "BAD_REQUEST"}, 400)
-    transcript = store_transcript(video_id, body.get("filename", ""), content, "manual_upload", metadata={"provenance": "manual_upload"})
+    transcript = store_transcript(video_id, body.filename, content, "manual_upload", metadata={"provenance": "manual_upload"})
     if not transcript:
         return json_response({"error": "no subtitle segments found", "error_code": "NO_USABLE_CAPTIONS"}, 400)
     return json_response(transcript)
