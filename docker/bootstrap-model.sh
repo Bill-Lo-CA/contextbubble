@@ -1,0 +1,109 @@
+#!/bin/sh
+set -eu
+
+: "${WHISPER_MODEL:?WHISPER_MODEL is required}"
+: "${WHISPER_MODEL_URL:?WHISPER_MODEL_URL is required}"
+: "${WHISPER_MODEL_SHA256:?WHISPER_MODEL_SHA256 is required}"
+
+case "$WHISPER_MODEL" in
+    /models/*|/*/models/*) ;;
+    *)
+        echo "error: WHISPER_MODEL must be inside a models directory" >&2
+        exit 1
+        ;;
+esac
+
+case "$WHISPER_MODEL" in
+    */models/|*/models)
+        echo "error: WHISPER_MODEL must include a model filename" >&2
+        exit 1
+        ;;
+esac
+
+case "/$WHISPER_MODEL/" in
+    */../*|*/./*)
+        echo "error: WHISPER_MODEL must not contain relative path components" >&2
+        exit 1
+        ;;
+esac
+
+if [ -d "$WHISPER_MODEL" ]; then
+    echo "error: WHISPER_MODEL target must not be a directory" >&2
+    exit 1
+fi
+
+model_dir=${WHISPER_MODEL%/*}
+mkdir -p "$model_dir"
+
+model_valid() {
+    [ -f "$1" ] || return 1
+    actual=$(sha256sum "$1")
+    actual=${actual%% *}
+    [ "$actual" = "$WHISPER_MODEL_SHA256" ]
+}
+
+if model_valid "$WHISPER_MODEL"; then
+    echo "model already valid: $WHISPER_MODEL"
+    if [ "$#" -gt 0 ]; then
+        exec "$@"
+    fi
+    exit 0
+fi
+
+partial=
+curl_pid=
+cleanup() {
+    if [ -n "$partial" ]; then
+        rm -f "$partial"
+    fi
+}
+
+forward_signal() {
+    signal_name=$1
+    exit_status=$2
+    trap - HUP INT TERM
+    if [ -n "$curl_pid" ]; then
+        kill "-$signal_name" "$curl_pid" 2>/dev/null || :
+        wait "$curl_pid" 2>/dev/null || :
+        curl_pid=
+    fi
+    cleanup
+    trap - 0
+    exit "$exit_status"
+}
+
+trap cleanup 0
+trap 'forward_signal HUP 129' HUP
+trap 'forward_signal INT 130' INT
+trap 'forward_signal TERM 143' TERM
+
+partial=$(mktemp "${WHISPER_MODEL}.partial.XXXXXX")
+
+curl --fail --location --retry 3 --retry-delay 2 \
+    --connect-timeout 30 --max-time 3600 \
+    --output "$partial" "$WHISPER_MODEL_URL" &
+curl_pid=$!
+curl_status=0
+wait "$curl_pid" || curl_status=$?
+curl_pid=
+if [ "$curl_status" -ne 0 ]; then
+    exit "$curl_status"
+fi
+
+if ! model_valid "$partial"; then
+    echo "error: model checksum mismatch" >&2
+    exit 1
+fi
+
+mv -fT "$partial" "$WHISPER_MODEL"
+if ! model_valid "$WHISPER_MODEL"; then
+    echo "error: installed model is not a valid regular file" >&2
+    exit 1
+fi
+partial=
+trap - 0 HUP INT TERM
+echo "model downloaded: $WHISPER_MODEL"
+
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi

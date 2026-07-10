@@ -1,14 +1,11 @@
-import asyncio
 from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import sys
 import tempfile
-import time
-import uuid
 
 from checks import self_check
-from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
+from config import API_VERSION, AGENT_MODE, BACKEND_HOST, BACKEND_PORT, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, VALIDATE_ASR_ON_START, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, set_data_dir, validate_config, validate_runtime_for_asr, validate_video_id
 
 
 if "--check" in sys.argv:
@@ -27,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
 import auth
-from agents import AgentProviderError, analysis_result, run_analysis_for_transcript, translate_segment
+from agents import AgentProviderError, analysis_result, run_analysis_for_transcript
 from auth import allowed_origin, pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from db import connect_db, init_db
 from jobs import create_or_reuse_job, job_payload, preparation_events, resume_preparations
@@ -35,12 +32,7 @@ from media import ExternalCommandError, fetch_youtube_subtitles
 from providers import gemini_status
 from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
-
-
-TRANSLATION_QUEUE = asyncio.Queue()
-TRANSLATION_JOBS = {}
-TRANSLATION_WORKER = None
-MAX_TRANSLATION_JOBS = 500
+from translation_jobs import create_translation_job, get_translation_job, public_translation_job, start_translation_worker, stop_translation_worker
 
 
 def json_response(payload, status=200):
@@ -85,93 +77,6 @@ def require_auth(authorization):
     if not authorized(authorization):
         return unauthorized()
     return None
-
-
-def public_translation_job(job):
-    payload = {
-        "translation_job_id": job["translation_job_id"],
-        "id": job["payload"].get("id", ""),
-        "status": job["status"],
-    }
-    if job.get("result"):
-        payload.update(job["result"])
-        payload["translation_job_id"] = job["translation_job_id"]
-        payload["status"] = job["status"]
-    if job.get("error"):
-        payload["error"] = job["error"]
-        payload["error_code"] = job.get("error_code", "TRANSLATION_FAILED")
-        payload["reason"] = job["error"]
-    return payload
-
-
-def prune_translation_jobs():
-    if len(TRANSLATION_JOBS) <= MAX_TRANSLATION_JOBS:
-        return
-    finished = sorted(
-        (job for job in TRANSLATION_JOBS.values() if job["status"] not in ("queued", "processing")),
-        key=lambda job: job["updated_at"],
-    )
-    for job in finished[:len(TRANSLATION_JOBS) - MAX_TRANSLATION_JOBS]:
-        TRANSLATION_JOBS.pop(job["translation_job_id"], None)
-
-
-async def translation_worker():
-    while True:
-        job_id = await TRANSLATION_QUEUE.get()
-        job = TRANSLATION_JOBS.get(job_id)
-        try:
-            if not job:
-                continue
-            job["status"] = "processing"
-            job["updated_at"] = time.time()
-            body = job["payload"]
-            started = time.time()
-            print(f"[translation] start job={job_id} id={body.get('id', '')} model={TRANSLATION_MODEL}", flush=True)
-            result = await run_in_threadpool(
-                translate_segment,
-                body.get("id", ""),
-                body.get("source_text", ""),
-                body.get("context_before", ""),
-                body.get("context_after", ""),
-                body.get("target_language", "zh-TW"),
-                bool(body.get("force_refresh")),
-            )
-            job["result"] = result
-            job["status"] = result.get("status") or "translated"
-            job["updated_at"] = time.time()
-            print(f"[translation] done job={job_id} id={body.get('id', '')} status={job['status']} seconds={job['updated_at'] - started:.1f}", flush=True)
-        except AgentProviderError as exc:
-            if job:
-                job["status"] = "failed"
-                job["error_code"] = exc.error_code
-                job["error"] = redact_secret_text(str(exc))
-                job["updated_at"] = time.time()
-        except Exception as exc:
-            if job:
-                job["status"] = "failed"
-                job["error_code"] = "TRANSLATION_FAILED"
-                job["error"] = redact_secret_text(str(exc))
-                job["updated_at"] = time.time()
-        finally:
-            TRANSLATION_QUEUE.task_done()
-
-
-async def start_translation_worker():
-    global TRANSLATION_WORKER
-    if not TRANSLATION_WORKER or TRANSLATION_WORKER.done():
-        TRANSLATION_WORKER = asyncio.create_task(translation_worker())
-
-
-async def stop_translation_worker():
-    global TRANSLATION_WORKER
-    if not TRANSLATION_WORKER:
-        return
-    TRANSLATION_WORKER.cancel()
-    try:
-        await TRANSLATION_WORKER
-    except asyncio.CancelledError:
-        pass
-    TRANSLATION_WORKER = None
 
 
 @asynccontextmanager
@@ -352,17 +257,7 @@ async def translations(request: Request, authorization: str = Header("")):
     body = await read_body(request)
     if isinstance(body, JSONResponse):
         return body
-    prune_translation_jobs()
-    job_id = f"translation-{uuid.uuid4().hex[:12]}"
-    job = {
-        "translation_job_id": job_id,
-        "payload": body,
-        "status": "queued",
-        "created_at": time.time(),
-        "updated_at": time.time(),
-    }
-    TRANSLATION_JOBS[job_id] = job
-    await TRANSLATION_QUEUE.put(job_id)
+    job = await create_translation_job(body)
     return ok(public_translation_job(job), 202)
 
 
@@ -371,7 +266,7 @@ async def translation_status(translation_job_id: str, authorization: str = Heade
     auth_error = require_auth(authorization)
     if auth_error:
         return auth_error
-    job = TRANSLATION_JOBS.get(translation_job_id)
+    job = get_translation_job(translation_job_id)
     if not job:
         return json_response({"status": "missing", "error_code": "NOT_FOUND", "api_version": API_VERSION}, 404)
     return ok(public_translation_job(job))

@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: .
+      args:
+        WHISPER_CPP_REF: "${WHISPER_CPP_REF:-v1.8.6}"
+    image: contextbubble-backend:cpu
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      CONTEXTBUBBLE_TOKEN: "${CONTEXTBUBBLE_TOKEN:-}"
+      CONTEXTBUBBLE_HOST: "0.0.0.0"
+      CONTEXTBUBBLE_PORT: "8000"
+      CONTEXTBUBBLE_DATA_DIR: "/data"
+      CONTEXTBUBBLE_VALIDATE_ASR_ON_START: "1"
+      YTDLP_CMD: "yt-dlp"
+      FFMPEG_CMD: "ffmpeg"
+      FFPROBE_CMD: "ffprobe"
+      WHISPER_CMD: "/opt/whisper/bin/whisper-cli"
+      WHISPER_MODEL: "${DOCKER_WHISPER_MODEL:-/models/ggml-base.en.bin}"
+      WHISPER_MODEL_URL: "${DOCKER_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/80da2d8bfee42b0e836fc3a9890373e5defc00a6/ggml-base.en.bin}"
+      WHISPER_MODEL_SHA256: "${DOCKER_WHISPER_MODEL_SHA256:-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002}"
+      WHISPER_LANGUAGE: "${DOCKER_WHISPER_LANGUAGE:-en}"
+      # CPU-only invariant; do not make configurable in this Compose service.
+      WHISPER_NO_GPU: "1"
+      AGENT_MODE: "${AGENT_MODE:-heuristic}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
+      OLLAMA_BASE_URL: "${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:8b}"
+      TRANSLATION_MODE: "${TRANSLATION_MODE:-ollama}"
+      TRANSLATION_MODEL: "${TRANSLATION_MODEL:-qwen3:8b}"
+      TRANSCRIPT_BLOCK_SPLITTER_MODE: "${TRANSCRIPT_BLOCK_SPLITTER_MODE:-ollama}"
+      TRANSCRIPT_BLOCK_SPLITTER_MODEL: "${TRANSCRIPT_BLOCK_SPLITTER_MODEL:-llama3.2:3b}"
+      DEMO_VIDEO_IDS: "${DEMO_VIDEO_IDS:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - "contextbubble-data:/data"
+      - "contextbubble-models:/models"
+
+volumes:
+  contextbubble-data:
+    name: contextbubble-data
+  contextbubble-models:
+    name: contextbubble-models

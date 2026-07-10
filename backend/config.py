@@ -113,7 +113,26 @@ def set_data_dir(path):
     DB_FILE = DATA_DIR / "contextbubble.sqlite3"
     JOB_LOG_FILE = DATA_DIR / "jobs.log"
     MEDIA_DIR = DATA_DIR / "media"
-    for module_name in ("db", "media", "jobs", "transcripts", "agents", "checks", "server"):
+    for module_name in (
+        "analysis_agents",
+        "analysis_store",
+        "agents",
+        "asr_pipeline",
+        "caption_pipeline",
+        "checks",
+        "db",
+        "job_events",
+        "jobs",
+        "media",
+        "preparation_jobs",
+        "preparation_runner",
+        "semantic_splitter",
+        "server",
+        "transcripts",
+        "translation_agents",
+        "translation_cache",
+        "translation_jobs",
+    ):
         module = sys.modules.get(module_name)
         if module:
             module.DATA_DIR = DATA_DIR

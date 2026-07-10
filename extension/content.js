@@ -3,7 +3,6 @@
   const BY_VIDEO_KEY = "contextbubbleByVideo";
   const ACTIVE_VIDEO_KEY = "contextbubbleActiveVideoId";
   const OWNER_KEY = "contextbubbleAnalysisOwner";
-  const OWNER_SESSION_KEY = "contextbubbleAnalysisOwner";
   const MAX_CAPTIONS = 120;
   const FALLBACK_CAPTION_INTERVAL_MS = 4500;
   const TRANSLATION_RETRY_DELAY_MS = 30000;
@@ -14,6 +13,12 @@
 
   globalThis.__contextbubbleCleanup?.();
   globalThis.__contextbubbleVersion = SCRIPT_VERSION;
+  const { clearSessionOwner, readSessionOwner, sameOwner, writeSessionOwner } = globalThis.contextbubbleOwnerState;
+  const { formatTime, normalizeText } = globalThis.contextbubbleStorage;
+  const { readLocal, writeLocal } = globalThis.contextbubbleStorage.create({ stopIfContextInvalidated });
+  const { translationDone } = globalThis.contextbubbleTranslations;
+  const { stageText } = globalThis.contextbubblePreparation;
+  const timeline = globalThis.contextbubbleTimeline;
 
   let video;
   let bubbles = [];
@@ -39,6 +44,7 @@
   let preparedTranscriptFetch = null;
   let lastPreparedTranscriptFetchAt = 0;
   let contextInvalidated = false;
+  let restoreOwnerPromise = null;
   let tickTimer;
 
   function getVideoId() {
@@ -61,46 +67,11 @@
       .join(" ");
   }
 
-  function normalizeText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim();
-  }
-
   function resetTranslationState() {
     inFlightTranslations = new Set();
     completedTranslations = new Set();
     failedTranslations = new Map();
     sentenceTranslationResults = new Map();
-  }
-
-  function sameOwner(left, right) {
-    return Boolean(left && right
-      && left.tabId === right.tabId
-      && left.videoId === right.videoId
-      && left.generation === right.generation);
-  }
-
-  function readSessionOwner() {
-    try {
-      return JSON.parse(sessionStorage.getItem(OWNER_SESSION_KEY) || "null");
-    } catch {
-      return null;
-    }
-  }
-
-  function writeSessionOwner(owner) {
-    try {
-      sessionStorage.setItem(OWNER_SESSION_KEY, JSON.stringify(owner));
-    } catch {
-      // Storage can be blocked in unusual browser modes; local owner still works until reload.
-    }
-  }
-
-  function clearSessionOwner() {
-    try {
-      sessionStorage.removeItem(OWNER_SESSION_KEY);
-    } catch {
-      // Ignore storage failures during cleanup.
-    }
   }
 
   function ownsVideo(videoId) {
@@ -109,28 +80,6 @@
 
   function ownerMatches(owner, videoId) {
     return sameOwner(owner, analysisOwner) && owner.videoId === videoId;
-  }
-
-  function readLocal(keys) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.get(keys, resolve);
-      } catch (error) {
-        stopIfContextInvalidated(error);
-        resolve({});
-      }
-    });
-  }
-
-  function writeLocal(values) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.set(values, resolve);
-      } catch (error) {
-        stopIfContextInvalidated(error);
-        resolve();
-      }
-    });
   }
 
   async function storedOwnerMatches(videoId) {
@@ -171,6 +120,24 @@
     return true;
   }
 
+  function scheduleRestoreAnalysisOwner(videoId) {
+    if (contextInvalidated || ownsVideo(videoId) || restoreOwnerPromise) return;
+    restoreOwnerPromise = restoreAnalysisOwner()
+      .then((restored) => {
+        if (restored && !contextInvalidated && getVideoId() === videoId && ownsVideo(videoId)) {
+          overlay.clear();
+        }
+      })
+      .catch((error) => {
+        if (!stopIfContextInvalidated(error)) {
+          console.warn("[ContextBubble] owner restore failed", error);
+        }
+      })
+      .finally(() => {
+        restoreOwnerPromise = null;
+      });
+  }
+
   async function rememberPreparationJob(videoId, job) {
     if (!job?.job_id || !analysisOwner) return;
     analysisOwner = { ...analysisOwner, jobId: job.job_id };
@@ -179,14 +146,6 @@
     await updateVideoState(videoId, (state) => {
       state.jobId = job.job_id;
     });
-  }
-
-  function formatTime(seconds) {
-    seconds = Math.max(0, Math.round(seconds || 0));
-    const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
-    const minutes = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
-    const secs = String(seconds % 60).padStart(2, "0");
-    return `${hours}:${minutes}:${secs}`;
   }
 
   function appendCaptionLog(videoId, text, currentTime, segment, isFallback = false) {
@@ -297,12 +256,8 @@
       } finally {
         inFlightTranslations.delete(requestKey);
       }
-    });
+    })();
     return queued;
-  }
-
-  function translationDone(result) {
-    return ["translated", "failed", "skipped"].includes(result?.status);
   }
 
   async function requestQueuedTranslation(payload) {
@@ -394,14 +349,22 @@
 
   function updateSentenceTranslation(videoId, result, expectedText = "") {
     return updateVideoState(videoId, (state) => {
-      const entries = state.shownSentenceEntries || [];
-      const entry = entries.find((item) => item.id === result.id);
-      if (!entry) return;
-      if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return;
-      entry.translated_text = normalizeText(result.translated_text);
-      entry.translation_status = result.status || "translated";
-      entry.translation_reason = result.reason || "";
-      state.shownSentenceEntries = entries;
+      const applyTranslation = (entries) => {
+        const entry = entries.find((item) => item.id === result.id);
+        if (!entry) return false;
+        if (expectedText && normalizeText(entry.text) !== normalizeText(expectedText)) return false;
+        entry.translated_text = normalizeText(result.translated_text);
+        entry.translation_status = result.status || "translated";
+        entry.translation_reason = result.reason || "";
+        return true;
+      };
+      const shownEntries = state.shownSentenceEntries || [];
+      const allEntries = state.allSentenceEntries || [];
+      const updatedShown = applyTranslation(shownEntries);
+      const updatedAll = applyTranslation(allEntries);
+      if (updatedShown) state.shownSentenceEntries = shownEntries;
+      if (updatedAll) state.allSentenceEntries = allEntries;
+      return updatedShown || updatedAll;
     });
   }
 
@@ -496,6 +459,8 @@
     lastFallbackCaptionAt = 0;
     loggedFallbackSegments = new Set();
     return updateVideoState(videoId, (state) => {
+      state.bubbles = [];
+      state.allSentenceEntries = [];
       state.captionLog = [];
       state.shownSentenceEntries = [];
       state.sentenceEntries = [];
@@ -531,6 +496,30 @@
       .sort((left, right) => left.start_seconds - right.start_seconds);
   }
 
+  function mergeStoredSentenceEntry(entry, existing) {
+    const next = {
+      ...(existing || {}),
+      ...entry,
+      text: normalizeText(entry.text),
+      source_text: normalizeText(entry.source_text || entry.text),
+    };
+    const sameText = existing && normalizeText(existing.text) === next.text;
+    if (!sameText) {
+      next.translated_text = "";
+      next.translation_status = "";
+      next.translation_reason = "";
+    }
+    const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
+    if (translation) {
+      next.translated_text = normalizeText(translation.translated_text);
+      next.translation_status = translation.status || "translated";
+      next.translation_reason = translation.reason || "";
+    } else if (inFlightTranslations.has(sentenceTranslationKey(next)) && !next.translated_text) {
+      next.translation_status = "pending";
+    }
+    return next;
+  }
+
   function replacementSentenceEntry(entry, byId, entries) {
     const matched = byId.get(entry.id);
     if (matched) return matched;
@@ -545,42 +534,31 @@
 
   async function syncStoredSentenceEntries(videoId, entries, transcriptSource) {
     if (!entries.length) return;
-    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const slots = Math.max(0, TRANSLATION_LOOKAHEAD_BATCH - inFlightTranslations.size);
     const changedEntries = await updateVideoState(videoId, (state) => {
-      state.allSentenceEntries = entries;
+      const previousById = new Map((state.allSentenceEntries || []).map((entry) => [entry.id, entry]));
+      const mergedEntries = entries.map((entry) => mergeStoredSentenceEntry(entry, previousById.get(entry.id)));
+      const byId = new Map(mergedEntries.map((entry) => [entry.id, entry]));
+      state.allSentenceEntries = mergedEntries;
       state.transcriptSource = transcriptSource;
       const shown = state.shownSentenceEntries || [];
       const changed = [];
       state.shownSentenceEntries = shown
         .map((entry) => {
-          const replacement = replacementSentenceEntry(entry, byId, entries);
-          if (!replacement) return entry;
-          const next = {
-            ...entry,
-            ...replacement,
-            text: normalizeText(replacement.text),
-            source_text: normalizeText(replacement.source_text || replacement.text),
-          };
+          const replacement = replacementSentenceEntry(entry, byId, mergedEntries);
+          if (!replacement) return null;
+          const next = mergeStoredSentenceEntry(replacement, entry);
           if (normalizeText(entry.text) !== next.text) {
-            next.translated_text = "";
-            next.translation_status = "";
-            next.translation_reason = "";
-            const translation = sentenceTranslationResults.get(sentenceTranslationKey(next));
-            if (translation) {
-              next.translated_text = normalizeText(translation.translated_text);
-              next.translation_status = translation.status || "translated";
-              next.translation_reason = translation.reason || "";
-            } else {
-              if (inFlightTranslations.has(sentenceTranslationKey(next))) {
-                next.translation_status = "pending";
-              }
-              changed.push(next);
-            }
+            changed.push(next);
           }
           return next;
         })
+        .filter(Boolean)
         .sort((left, right) => left.start_seconds - right.start_seconds);
-      return changed;
+      const readyToTranslate = mergedEntries
+        .filter((entry) => !entry.translated_text)
+        .filter((entry) => canQueueTranslation(sentenceTranslationKey(entry), videoId));
+      return [...changed, ...readyToTranslate].slice(0, slots);
     });
     for (const entry of changedEntries || []) {
       requestSentenceTranslation(videoId, entry);
@@ -618,6 +596,7 @@
         appendTranscriptSegments(job.segments || []);
         appendBubbles(job.bubbles || []);
         await updateVideoState(videoId, (state) => {
+          state.bubbles = bubbles;
           state.transcriptSource = job.transcript_source;
           state.status = job.status === "ready" ? "Ready." : stageText(job);
         });
@@ -659,26 +638,6 @@
     updateVideoState(videoId, (state) => {
       state.status = text;
     });
-  }
-
-  function stageText(job) {
-    const stages = {
-      queued: "Queued...",
-      fetching_captions: "Checking captions...",
-      caption_available: "Captions ready. Checking quality...",
-      loading_demo: "Loading demo transcript...",
-      fetching_metadata: "Reading video metadata...",
-      downloading_audio: "Downloading audio...",
-      normalizing_audio: "Normalizing audio...",
-      transcribing: `Transcribing ${job.chunks_completed || 0} / ${job.chunks_total || 0} chunks...`,
-      merging_transcript: "Merging transcript...",
-      concept_agent: "Generating concepts...",
-      reviewing: "Reviewing candidates...",
-      validating: "Validating bubbles...",
-      ready: `Ready: ${job.bubble_count || job.bubbles?.length || 0} bubbles.`,
-      failed: job.message || "Preparation failed.",
-    };
-    return stages[job.stage] || `${job.stage || job.status}...`;
   }
 
   async function startPreparation(videoId, learnerLevel, demoMode, forceRefresh) {
@@ -751,7 +710,7 @@
     loggedFallbackSegments = new Set();
     lastVideoTime = currentVideo?.currentTime || 0;
     overlay.clear();
-    resetTimelineDisplay(videoId);
+    if (forceReset) resetTimelineDisplay(videoId);
   }
 
   async function startAnalysis({ tabId, videoId: requestedVideoId, learnerLevel, sessionToken, demoMode = false, forceRefresh = false }) {
@@ -789,8 +748,9 @@
       await rememberPreparationJob(videoId, job);
       const finalSentenceEntries = normalizedSentenceEntries(job.sentence_entries || []);
       await updateVideoState(videoId, (state) => {
+        state.bubbles = job.bubbles || [];
         state.jobId = job.job_id;
-        state.status = "Ready.";
+        state.status = stageText(job);
         state.captionLog = state.captionLog || [];
       });
       await syncStoredSentenceEntries(videoId, finalSentenceEntries, job.transcript_source);
@@ -824,14 +784,26 @@
     }
   }
 
+  function jumpToBubble(message) {
+    const currentVideo = findVideo();
+    const videoId = getVideoId();
+    if (!currentVideo || !videoId || message.videoId !== videoId) {
+      return { error: "Active YouTube video does not match this analysis." };
+    }
+    const startSeconds = Math.max(0, Number(message.startSeconds || 0));
+    shownKeys = new Set();
+    currentVideo.currentTime = Math.max(0, startSeconds - 0.2);
+    overlay.clear();
+    return { status: "ok" };
+  }
+
   function tick() {
     const currentVideo = findVideo();
     const videoId = getVideoId();
 
     if (!currentVideo || !videoId) return;
     if (!ownsVideo(videoId)) {
-      restoreAnalysisOwner();
-      if (analysisOwner) overlay.clear();
+      scheduleRestoreAnalysisOwner(videoId);
       return;
     }
     if (trackedVideo !== currentVideo) {
@@ -849,44 +821,33 @@
     }
     lastVideoTime = currentVideo.currentTime;
 
-    const activeSentence = sentenceEntries.find((entry) => {
-      return currentVideo.currentTime >= entry.start_seconds && currentVideo.currentTime <= entry.end_seconds;
-    });
+    const activeSentence = timeline.entryAt(sentenceEntries, currentVideo.currentTime);
     if (activeSentence) {
       showSentenceEntry(videoId, activeSentence).then(() => requestSentenceTranslation(videoId, activeSentence));
     }
     queueSentenceTranslationLookahead(videoId, currentVideo.currentTime);
 
     const visibleCaptionText = readCaptionText();
-    const activeSegment = transcriptSegments.find((segment) => {
-      return currentVideo.currentTime >= segment.start_seconds && currentVideo.currentTime <= segment.end_seconds;
-    });
+    const activeSegment = timeline.entryAt(transcriptSegments, currentVideo.currentTime);
     if (!sentenceEntries.length) {
       appendCaptionLog(videoId, visibleCaptionText || activeSegment?.text, currentVideo.currentTime, activeSegment, !visibleCaptionText);
     }
 
-    for (const bubble of bubbles) {
-      const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
-      if (!shownKeys.has(key) && currentVideo.currentTime > bubble.start_seconds + 1.5) {
-        shownKeys.add(key);
-      }
-    }
-
-    const dueBubble = bubbles.find((bubble) => {
-      const key = `${videoId}:${bubble.concept}:${bubble.start_seconds}`;
-      return !shownKeys.has(key)
-        && currentVideo.currentTime >= bubble.start_seconds - 0.3
-        && currentVideo.currentTime <= bubble.start_seconds + 1.5;
-    });
+    timeline.markSkippedBubbles(bubbles, shownKeys, videoId, currentVideo.currentTime);
+    const dueBubble = timeline.dueBubble(bubbles, shownKeys, videoId, currentVideo.currentTime);
 
     if (dueBubble) {
       if (overlay.show(dueBubble)) {
-        shownKeys.add(`${videoId}:${dueBubble.concept}:${dueBubble.start_seconds}`);
+        shownKeys.add(timeline.bubbleKey(videoId, dueBubble));
       }
     }
   }
 
   function handleMessage(message, _sender, sendResponse) {
+    if (message?.type === "contextbubble:jump-to-bubble") {
+      sendResponse(jumpToBubble(message));
+      return false;
+    }
     if (message?.type !== "contextbubble:analyze-v2") return false;
     startAnalysis(message).then(sendResponse).catch((error) => {
       sendResponse({ error: error.message });

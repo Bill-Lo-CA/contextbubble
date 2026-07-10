@@ -6,7 +6,7 @@ from agents import *
 import auth
 from config import *
 from db import connect_db, init_db
-from jobs import update_job
+from jobs import job_payload, mark_asr_chunk_completed, update_job
 from media import *
 from transcript_quality import *
 from transcripts import *
@@ -112,6 +112,67 @@ def self_check_media_helpers():
     assert TRANSLATION_MODEL == "qwen3:8b"
     assert TRANSCRIPT_BLOCK_SPLITTER_MODE == "ollama"
     assert TRANSCRIPT_BLOCK_SPLITTER_MODEL == "llama3.2:3b"
+
+
+def self_check_partial_asr_payload():
+    timestamp = now_iso()
+    with connect_db() as conn:
+        conn.execute("delete from asr_chunk_segments where job_id = ?", ("prepare-partial-asr",))
+        conn.execute("delete from asr_chunks where job_id = ?", ("prepare-partial-asr",))
+        conn.execute("delete from preparation_jobs where job_id = ?", ("prepare-partial-asr",))
+        conn.execute(
+            "insert or replace into videos values (?, ?, ?)",
+            ("partial-asr-demo", timestamp, timestamp),
+        )
+        conn.execute(
+            """
+            insert into preparation_jobs
+            (job_id, video_id, learner_level, source_policy, status, stage, duration_seconds, chunks_total, chunks_completed, progress, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "prepare-partial-asr",
+                "partial-asr-demo",
+                "beginner",
+                "live",
+                "processing",
+                "transcribing",
+                60,
+                2,
+                1,
+                0.5,
+                timestamp,
+                timestamp,
+            ),
+        )
+        conn.executemany(
+            "insert or ignore into asr_chunks values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("prepare-partial-asr", 0, 0, 30, "pending", 0, 0, None, timestamp),
+                ("prepare-partial-asr", 1, 28, 58, "pending", 0, 0, None, timestamp),
+            ],
+        )
+    mark_asr_chunk_completed(
+        "prepare-partial-asr",
+        0,
+        [
+            {
+                "start_seconds": 0,
+                "end_seconds": 4,
+                "text": "This partial transcript is already useful.",
+            }
+        ],
+    )
+    payload = job_payload(
+        "prepare-partial-asr",
+        include_ready=False,
+        include_transcript=True,
+        include_sentence_entries=True,
+    )
+    assert payload["partial_transcript"] is True
+    assert payload["transcript_source"] == "whisper_partial"
+    assert payload["segments"][0]["id"] == "segment-001"
+    assert payload["sentence_entries"][0]["text"] == "This partial transcript is already useful."
 
 
 def self_check_sentence_qc():
@@ -230,6 +291,26 @@ def self_check_analysis_and_storage():
     assert hashlib.sha256(b"demo").hexdigest()
 
 
+def self_check_concept_agent_fallback():
+    original_mode = window_note.__globals__["AGENT_MODE"]
+    original_llm = window_note.__globals__["llm_concept_agent"]
+    try:
+        window_note.__globals__["AGENT_MODE"] = "ollama"
+        window_note.__globals__["llm_concept_agent"] = lambda *_: []
+        note = window_note([
+            {
+                "id": "segment-001",
+                "start_seconds": 0,
+                "end_seconds": 5,
+                "text": "The Supreme Leader funeral became a display of regime power.",
+            }
+        ], "beginner")
+        assert note["candidate_concepts"], "empty LLM output should fall back to heuristic concepts"
+    finally:
+        window_note.__globals__["AGENT_MODE"] = original_mode
+        window_note.__globals__["llm_concept_agent"] = original_llm
+
+
 def self_check_security_helpers():
     secret = f"{auth.API_TOKEN} {auth.PAIRING_CODE} key={GEMINI_API_KEY or 'demo'}"
     redacted = auth.redact_secret_text(secret)
@@ -312,8 +393,10 @@ def self_check():
     self_check_auth()
     self_check_subtitles()
     self_check_media_helpers()
+    self_check_partial_asr_payload()
     self_check_sentence_qc()
     self_check_transcript_source_quality()
     self_check_analysis_and_storage()
+    self_check_concept_agent_fallback()
     self_check_security_helpers()
     self_check_translation_decisions()

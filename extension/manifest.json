@@ -14,7 +14,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["backendClient.js", "contentOverlay.js", "content.js"],
+      "js": ["backendClient.js", "contentOverlay.js", "contentOwnerState.js", "contentStorage.js", "contentTranslations.js", "contentPreparation.js", "contentTimeline.js", "content.js"],
       "css": ["styles.css"]
     }
   ],

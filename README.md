@@ -1,153 +1,41 @@
 # ContextBubble
 
-ContextBubble is a Chromium extension prototype for showing timestamped learning
-notes on YouTube videos.
+ContextBubble is a local-first Chromium extension prototype for showing
+timestamped learning notes on YouTube videos.
 
-The current prototype detects the active YouTube video, starts or reuses a
-persistent preparation job, polls progress until the video is ready, and shows
-reviewed timestamped bubbles on the page. The backend uses complete YouTube
-captions when available. If captions are unavailable, it downloads audio once,
-normalizes it once, transcribes overlapping local chunks through whisper.cpp,
-merges the transcript, then runs concept generation and review. Captions are
-logged in the Chrome Side Panel.
+The extension detects the active YouTube video, starts or reuses a persistent
+backend preparation job, polls progress until the video is ready, and shows
+reviewed timestamped bubbles on the page. The local backend uses YouTube
+captions when available, can fall back to whisper.cpp ASR, persists runtime
+state in SQLite, and supports concept, review, and translation workflows.
 
-## Requirements
+ContextBubble is intended for localhost use. The local pairing/token model is
+prototype auth, not production authentication.
 
-- Python 3
-- Chromium, Chrome, or Brave
-- Node.js, only for `node --check` validation
-- `ffmpeg`
-- A recent `yt-dlp`
-- whisper.cpp
-- A whisper.cpp model file
+## Quick Start
 
-The backend defaults to tools under your home directory:
+Docker Compose is the supported runtime path for normal local use:
 
 ```sh
-YTDLP_CMD="$HOME/.local/bin/yt-dlp"
-FFMPEG_CMD="ffmpeg"
-FFPROBE_CMD="ffprobe"
-WHISPER_CMD="$HOME/tools/whisper.cpp/build/bin/whisper-cli"
-WHISPER_MODEL="$HOME/tools/whisper.cpp/models/ggml-base.en.bin"
-WHISPER_NO_GPU=0
-GEMINI_API_KEY=""
-GEMINI_MODEL="gemini-2.5-flash"
-OLLAMA_BASE_URL="http://127.0.0.1:11434"
-OLLAMA_MODEL="qwen3:8b"
-AGENT_MODE="heuristic"
-TRANSLATION_MODE="ollama"
-TRANSLATION_MODEL="qwen3:8b"
-DEMO_VIDEO_IDS=""
+docker compose up --build
 ```
 
-If those paths exist, the backend uses them automatically. Override them only
-when your tools live elsewhere. By default, whisper.cpp is allowed to use GPU
-when the binary was built with GPU support. Set `WHISPER_NO_GPU=1` to force CPU
-mode. Agent analysis defaults to the local heuristic mode for testing. Set
-`AGENT_MODE=gemini` and provide `GEMINI_API_KEY` to use Gemini, or set
-`AGENT_MODE=ollama` to use a local Ollama model. Translation is configured
-separately and defaults to local Ollama with `qwen3:8b`, so the bubble workflow
-can stay deterministic while English-to-Traditional-Chinese translation uses a
-real multilingual model. Demo fixtures are only used when Demo mode is checked
-in the popup or when the current video ID is listed in `DEMO_VIDEO_IDS`.
-
-For file-based local config, copy the example file and keep the real file
-private:
+In another terminal, read the short pairing code:
 
 ```sh
-cp .env.example .env
+docker compose logs backend
+```
+
+No `.env` file is needed for the default Docker setup. If you need Docker
+overrides and no private `.env` exists yet:
+
+```sh
+cp .env.docker.example .env
 chmod 600 .env
 ```
 
-The backend loads `.env` from the repository root and expands paths like
-`${HOME}/.local/share/contextbubble`. Values already exported in the shell win
-over `.env`. Runtime state goes under `CONTEXTBUBBLE_DATA_DIR`; that directory
-is kept at mode `0700`, and token/environment files are kept at `0600`.
-
-## Repeatable Final-Project Demo
-
-Use this path for recording when live YouTube captions, ASR speed, or model
-availability should not decide whether the demo works.
-
-Selected demo video:
-
-```text
-https://www.youtube.com/watch?v=fNk_zzaMoSs
-```
-
-The matching stable transcript fixture is:
-
-```text
-backend/fixtures/fNk_zzaMoSs.vtt
-```
-
-Run the backend in local deterministic mode:
-
-```sh
-AGENT_MODE=heuristic TRANSLATION_MODE=ollama TRANSLATION_MODEL=qwen3:8b python backend/server.py
-```
-
-Then load the extension, pair with the printed code, open the selected YouTube
-URL, enable **Demo mode**, pick a learner level, and click **Analyze Video**.
-Demo mode uses the bundled transcript fixture for that video and still runs the
-normal preparation, Concept Agent, Reviewer Agent, validator, cache, bubbles,
-and Side Panel path.
-
-For a Gemini-backed recording, use the same fixture path but start the backend
-with `GEMINI_API_KEY` set in `.env` or in the shell:
-
-```sh
-AGENT_MODE=gemini GEMINI_API_KEY="..." python backend/server.py
-```
-
-The fixture keeps the recorded demo independent from live caption availability,
-`yt-dlp`, and whisper.cpp runtime. Live caption retrieval and ASR fallback remain
-available when Demo mode is off.
-
-## Install Tools
-
-Install or update `yt-dlp` from the release binary:
-
-```sh
-mkdir -p "$HOME/.local/bin"
-curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-  -o "$HOME/.local/bin/yt-dlp"
-chmod a+rx "$HOME/.local/bin/yt-dlp"
-"$HOME/.local/bin/yt-dlp" --version
-```
-
-Install `ffmpeg` with your system package manager if it is missing:
-
-```sh
-ffmpeg -version
-```
-
-Build whisper.cpp and download a model. For example, this repo expects a working
-binary and model at:
-
-```text
-$HOME/tools/whisper.cpp/build/bin/whisper-cli
-$HOME/tools/whisper.cpp/models/ggml-base.en.bin
-```
-
-## Run Backend
-
-From the repo root:
-
-```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-python backend/server.py
-```
-
-The backend listens on `127.0.0.1` and prints a short pairing code. A generated
-admin bearer token is stored privately at
-`backend/.contextbubble/contextbubble.token` instead of being written to logs:
-
-```text
-http://127.0.0.1:8000
-```
+Then edit only the values you need. See [Docker Setup](docs/setup-docker.md) for
+state, model, `.env`, validation, and restart details.
 
 ## Load Extension
 
@@ -163,11 +51,8 @@ http://127.0.0.1:8000
 
 The extension starts or resumes a backend preparation job and shows stage
 progress such as caption checks, audio download, transcription, merge, concept
-generation, review, and ready state. Bubbles display only inside a short timing
-window near their timestamp; skipped old bubbles are not replayed after seeking.
-If YouTube captions and ASR fallback fail, the extension reports the error
-instead of silently using the demo fixture. Use **Demo mode** only for an
-explicit fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
+generation, review, and ready state. Use **Demo mode** only for an explicit
+fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
 
 ## Validate
 
@@ -175,45 +60,21 @@ explicit fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs the backend self-check and extension JavaScript syntax
-checks without requiring `yt-dlp`, `ffmpeg`, Whisper, Gemini, or Ollama.
+`scripts/check.sh` runs the unit and contract tests, backend self-check, and
+extension JavaScript syntax checks without requiring `yt-dlp`, `ffmpeg`,
+Whisper, Gemini, or Ollama.
 
-## Implementation Notes
+For Docker Compose config validation:
 
-Backend code is split by responsibility across small modules:
-`server.py`, `config.py`, `auth.py`, `db.py`, `transcripts.py`, `media.py`,
-`agents.py`, `jobs.py`, `checks.py`, and `providers.py`. The extension keeps
-shared backend fetch handling in `extension/backendClient.js` and bubble
-rendering in `extension/contentOverlay.js`.
+```sh
+scripts/check-compose.sh
+```
 
-## Local Auth Model
+## Documentation
 
-The backend is a local-dev service bound to `127.0.0.1`. It loads the admin
-bearer token from `CONTEXTBUBBLE_TOKEN` or a private generated token file, and
-does not print that token. It prints a one-use pairing code to the terminal at
-startup. The popup uses six single-digit inputs for the pairing code. If the
-code expires, the popup can request a new code; the backend prints that code to
-the terminal and does not return it to the browser. The extension stores only
-the resulting session token in `chrome.storage.session`.
-
-This is prototype local auth, not production auth. CORS is intentionally narrow:
-pairing is for extension origins, and protected routes still require an admin or
-session bearer token. Local non-browser processes are not constrained by CORS and
-must still know a valid token for protected routes.
-
-## Current Limits
-
-- YouTube caption fetch depends on `yt-dlp` and caption availability.
-- Whole-video ASR fallback downloads full audio once, then processes local overlapping chunks.
-- Pairing codes are one-use and expire after five minutes; use **Resend Code** in the popup to print a fresh code in the backend terminal.
-- Only one ASR preparation runs at a time in the local backend process.
-- The stored demo transcript fixture is only available through explicit Demo mode or the demo video allowlist.
-- Preparation jobs, chunks, transcripts, analyses, and bubbles persist under `CONTEXTBUBBLE_DATA_DIR`, defaulting to `backend/.contextbubble/contextbubble.sqlite3`.
-- The extension stores only a paired session token in `chrome.storage.session`, not the admin token in `chrome.storage.local`.
-- Transcript, caption, and popup status state is scoped by YouTube video in extension local storage.
-- External-tool failures are logged to `backend/.contextbubble/jobs.log` with bounded stderr tails.
-- The bubble workflow defaults to `AGENT_MODE=heuristic`; set `AGENT_MODE=gemini` to use Gemini or `AGENT_MODE=ollama` to use Ollama.
-- Translation defaults to `TRANSLATION_MODE=ollama` with `TRANSLATION_MODEL=qwen3:8b`.
-- The Side Panel shows prepared sentence cards after analysis is ready and falls back to live caption debug text before then.
-- The extension does not download media directly; backend `yt-dlp` does.
-- YouTube download behavior depends on `yt-dlp` staying current.
+- [Docs Index](docs/README.md): all current docs.
+- [Docker Setup](docs/setup-docker.md): official local runtime path.
+- [Native Developer Setup](docs/setup-native.md): developer-only host setup.
+- [Demo](docs/demo.md): repeatable fixture-backed demo flow.
+- [Architecture](docs/architecture.md): backend and extension module map.
+- [Limits](docs/limits.md): local prototype limits and security notes.
