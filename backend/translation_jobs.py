@@ -4,7 +4,8 @@ import uuid
 
 from starlette.concurrency import run_in_threadpool
 
-from agents import AgentProviderError, translate_segment
+from providers import AgentProviderError
+from translation_agents import translate_segment
 from auth import redact_secret_text
 from config import TRANSLATION_MODEL
 

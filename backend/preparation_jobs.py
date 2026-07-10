@@ -2,7 +2,8 @@ import hashlib
 import threading
 import time
 
-from agents import analysis_result, semantic_sentence_entries
+from analysis_store import analysis_result
+from semantic_splitter import semantic_sentence_entries
 from config import *
 from db import connect_db
 from job_events import add_preparation_event
