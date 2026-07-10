@@ -80,6 +80,17 @@ MIGRATIONS = (
         create index if not exists idx_translation_cache_lookup on translation_cache(segment_id, target_language, provider, model, prompt_version);
         create index if not exists idx_session_tokens_expiry on session_tokens(expires_at);
     """),
+    (2, "persisted_translation_jobs", """
+        create table if not exists translation_jobs (
+            job_id text primary key, job_key text not null, segment_id text not null,
+            payload_json text not null, status text not null check (status in ('queued','processing','translated','failed','skipped')),
+            result_json text, error_code text, error_message text,
+            attempts integer not null default 0 check (attempts >= 0),
+            created_at real not null, updated_at real not null
+        );
+        create index if not exists idx_translation_jobs_status on translation_jobs(status, created_at);
+        create index if not exists idx_translation_jobs_key on translation_jobs(job_key, status, created_at);
+    """),
 )
 
 

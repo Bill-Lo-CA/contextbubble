@@ -253,6 +253,8 @@ class RuntimeConfigTests(unittest.TestCase):
                         "resume_preparations",
                         side_effect=lambda: events.append("resume"),
                     ),
+                    mock.patch.object(server, "start_translation_worker", new=mock.AsyncMock()),
+                    mock.patch.object(server, "stop_translation_worker", new=mock.AsyncMock()),
                     mock.patch("builtins.print") as print_output,
                 ):
                     run_lifespan(server)

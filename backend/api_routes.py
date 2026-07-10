@@ -16,7 +16,7 @@ from preparation_jobs import create_or_reuse_job, job_payload
 from providers import AgentProviderError, gemini_status
 from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
-from translation_jobs import create_translation_job, get_translation_job, public_translation_job
+from translation_jobs import TranslationQueueFull, create_translation_job, get_translation_job, public_translation_job
 
 
 pairing_router = APIRouter()
@@ -155,7 +155,10 @@ async def translations(request: Request, authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
     body = await read_model(request, TranslationRequest)
     if isinstance(body, JSONResponse): return body
-    return ok(public_translation_job(await create_translation_job(body.model_dump())), 202)
+    try:
+        return ok(public_translation_job(await create_translation_job(body.model_dump())), 202)
+    except TranslationQueueFull as exc:
+        return error("TRANSLATION_QUEUE_FULL", str(exc), 429)
 
 
 @translations_router.get("/api/translations/{translation_job_id}")
