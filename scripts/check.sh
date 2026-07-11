@@ -2,6 +2,7 @@
 set -eu
 export CONTEXTBUBBLE_SKIP_DOTENV=1
 
+uv run --locked ruff check backend
 uv run --locked python -m unittest discover -s backend/tests -v
 uv run --locked python backend/server.py --check
 node --check extension/backendClient.js
@@ -14,3 +15,4 @@ node --check extension/contentTimeline.js
 node --check extension/content.js
 node --check extension/popup.js
 node --check extension/sidepanel.js
+node -e 'JSON.parse(require("fs").readFileSync("extension/manifest.json", "utf8"))'

@@ -67,8 +67,10 @@ def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_re
     timestamp = now_iso()
     with connect_db() as conn:
         conn.execute(
-            "insert or replace into analyses values (?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce((select created_at from analyses where analysis_id = ?), ?), ?)",
-            (analysis_id, video_id, learner_level, transcript_id, cache_key, "processing", "concept_agent", None, None, analysis_id, timestamp, timestamp),
+            """insert into analyses (analysis_id, video_id, learner_level, transcript_id, cache_key, status, stage, error_code, message, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(analysis_id) do update set status=excluded.status, stage=excluded.stage, error_code=excluded.error_code, message=excluded.message, updated_at=excluded.updated_at""",
+            (analysis_id, video_id, learner_level, transcript_id, cache_key, "processing", "concept_agent", None, None, timestamp, timestamp),
         )
         conn.execute("delete from bubbles where analysis_id = ?", (analysis_id,))
 
@@ -97,7 +99,7 @@ def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_re
                 ("completed", "ready", json.dumps(metrics), now_iso(), analysis_id),
             )
             conn.executemany(
-                "insert into bubbles values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert into bubbles (analysis_id, bubble_id, concept, anchor_segment_id, source_segment_ids, start_seconds, short_explanation, expanded_explanation, confidence, review_status, review_reason) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         analysis_id,

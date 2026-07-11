@@ -60,8 +60,8 @@ fixture-backed demo. Use **Re-analyze** to force a fresh preparation.
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs the unit and contract tests, backend self-check, and
-extension JavaScript syntax checks without requiring `yt-dlp`, `ffmpeg`,
+`scripts/check.sh` runs Ruff, the unit and contract tests, backend self-check,
+extension JavaScript syntax checks, and manifest validation without requiring `yt-dlp`, `ffmpeg`,
 Whisper, Gemini, or Ollama.
 
 For Docker Compose config validation:

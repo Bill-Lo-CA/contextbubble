@@ -2,7 +2,7 @@ from pathlib import Path
 import shutil
 import threading
 
-from config import *
+import config
 from db import connect_db
 from job_events import add_preparation_event
 from asr_provider import whisper_cpp
@@ -22,7 +22,7 @@ def mark_asr_chunk_processing(job_id, chunk_index):
             set status = ?, attempt_count = attempt_count + 1, error_code = null, updated_at = ?
             where job_id = ? and chunk_index = ?
             """,
-            ("processing", now_iso(), job_id, chunk_index),
+            ("processing", config.now_iso(), job_id, chunk_index),
         )
 
 
@@ -30,7 +30,7 @@ def mark_asr_chunk_completed(job_id, chunk_index, segments):
     with connect_db() as conn:
         conn.execute("delete from asr_chunk_segments where job_id = ? and chunk_index = ?", (job_id, chunk_index))
         conn.executemany(
-            "insert into asr_chunk_segments values (?, ?, ?, ?, ?, ?)",
+            "insert into asr_chunk_segments (job_id, chunk_index, segment_index, start_seconds, end_seconds, text) values (?, ?, ?, ?, ?, ?)",
             [
                 (job_id, chunk_index, index, segment["start_seconds"], segment["end_seconds"], segment["text"])
                 for index, segment in enumerate(segments)
@@ -42,7 +42,7 @@ def mark_asr_chunk_completed(job_id, chunk_index, segments):
             set status = ?, segment_count = ?, error_code = null, updated_at = ?
             where job_id = ? and chunk_index = ?
             """,
-            ("completed", len(segments), now_iso(), job_id, chunk_index),
+            ("completed", len(segments), config.now_iso(), job_id, chunk_index),
         )
         return conn.execute(
             "select count(*) as count from asr_chunks where job_id = ? and status = 'completed'",
@@ -58,17 +58,18 @@ def mark_asr_chunk_failed(job_id, chunk_index, error_code):
             set status = ?, error_code = ?, updated_at = ?
             where job_id = ? and chunk_index = ?
             """,
-            ("failed", error_code, now_iso(), job_id, chunk_index),
+            ("failed", error_code, config.now_iso(), job_id, chunk_index),
         )
 
 
 def run_whole_video_asr(job_id, video_id):
-    validate_runtime_for_asr()
+    config.validate_runtime_for_asr()
     with ASR_LOCK:
         update_job(job_id, stage="fetching_metadata", progress=0.05)
-        ensure_private_dir(MEDIA_DIR)
-        job_media_dir = MEDIA_DIR / job_id
-        ensure_private_dir(job_media_dir)
+        media_dir = config.get_settings().media_dir
+        config.ensure_private_dir(media_dir)
+        job_media_dir = media_dir / job_id
+        config.ensure_private_dir(job_media_dir)
         try:
             duration = get_youtube_duration(video_id, job_id)
         except (RuntimeError, ExternalCommandError):
@@ -87,10 +88,10 @@ def run_whole_video_asr(job_id, video_id):
             duration = media_duration(normalized_audio, job_id)
 
         chunks = create_chunks(duration)
-        timestamp = now_iso()
+        timestamp = config.now_iso()
         with connect_db() as conn:
             conn.executemany(
-                "insert or ignore into asr_chunks values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert or ignore into asr_chunks (job_id, chunk_index, start_seconds, end_seconds, status, attempt_count, segment_count, error_code, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (job_id, chunk["chunk_index"], chunk["start_seconds"], chunk["end_seconds"], "pending", 0, 0, None, timestamp)
                     for chunk in chunks

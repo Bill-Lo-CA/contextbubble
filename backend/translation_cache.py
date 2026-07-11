@@ -41,7 +41,9 @@ def save_translation_cache(cache_key, segment_id, source_hash, context_hash, tar
     with connect_db() as conn:
         conn.execute(
             """
-            insert or replace into translation_cache values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce((select created_at from translation_cache where cache_key = ?), ?), ?)
+            insert into translation_cache (cache_key, segment_id, source_hash, context_hash, target_language, provider, model, prompt_version, translated_text, confidence, status, decision, reason, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(cache_key) do update set translated_text=excluded.translated_text, confidence=excluded.confidence, status=excluded.status, decision=excluded.decision, reason=excluded.reason, updated_at=excluded.updated_at
             """,
             (
                 cache_key,
@@ -57,7 +59,6 @@ def save_translation_cache(cache_key, segment_id, source_hash, context_hash, tar
                 result.get("status", "failed"),
                 result.get("decision", "translate"),
                 result.get("reason", ""),
-                cache_key,
                 timestamp,
                 timestamp,
             ),

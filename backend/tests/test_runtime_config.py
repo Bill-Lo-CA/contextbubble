@@ -35,6 +35,9 @@ class FakeFastAPI:
     def route(self, *args, **kwargs):
         return lambda function: function
 
+    def include_router(self, _router):
+        pass
+
     middleware = route
     exception_handler = route
     post = route
@@ -44,6 +47,7 @@ class FakeFastAPI:
 def server_dependency_modules():
     fastapi = types.ModuleType("fastapi")
     fastapi.FastAPI = FakeFastAPI
+    fastapi.APIRouter = FakeFastAPI
     fastapi.Header = lambda default="": default
     fastapi.Request = type("Request", (), {})
 
@@ -249,6 +253,8 @@ class RuntimeConfigTests(unittest.TestCase):
                         "resume_preparations",
                         side_effect=lambda: events.append("resume"),
                     ),
+                    mock.patch.object(server, "start_translation_worker", new=mock.AsyncMock()),
+                    mock.patch.object(server, "stop_translation_worker", new=mock.AsyncMock()),
                     mock.patch("builtins.print") as print_output,
                 ):
                     run_lifespan(server)
