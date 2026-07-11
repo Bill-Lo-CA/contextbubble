@@ -165,6 +165,19 @@ class RuntimeConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CONTEXTBUBBLE_PORT must be an integer"):
                 load_config()
 
+    def test_asr_provider_defaults_to_whisper_cpp_and_rejects_unknown_values(self):
+        config = load_config()
+        self.assertEqual(config.load_settings(env_without_dotenv()).asr_provider, "whisper_cpp")
+        with self.assertRaisesRegex(ValueError, "ASR_PROVIDER"):
+            config.validate_config(config.load_settings(env_without_dotenv({"ASR_PROVIDER": "unknown"})))
+
+    def test_asr_provider_selection_uses_active_settings(self):
+        from asr_provider import get_asr_provider, whisper_cpp
+        import config
+
+        with config.settings_override(__import__("dataclasses").replace(config.get_settings(), asr_provider="whisper_cpp")):
+            self.assertIs(get_asr_provider(), whisper_cpp)
+
     def test_transcription_forwards_cpu_and_language_settings(self):
         from asr_provider import whisper_cpp
         import asr_provider

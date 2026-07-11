@@ -23,6 +23,7 @@ FFPROBE_CMD="ffprobe"
 WHISPER_CMD="$HOME/tools/whisper.cpp/build/bin/whisper-cli"
 WHISPER_MODEL="$HOME/tools/whisper.cpp/models/ggml-base.en.bin"
 WHISPER_NO_GPU=0
+ASR_PROVIDER="whisper_cpp"
 GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
 OLLAMA_BASE_URL="http://127.0.0.1:11434"
@@ -37,6 +38,9 @@ If those paths exist, the backend uses them automatically. Override them only
 when your tools live elsewhere. By default, whisper.cpp is allowed to use GPU
 when the binary was built with GPU support. Set `WHISPER_NO_GPU=1` to force CPU
 mode.
+
+`ASR_PROVIDER` currently accepts only `whisper_cpp`; it is the selection point
+for later optional providers and does not add another runtime dependency.
 
 ## Environment
 

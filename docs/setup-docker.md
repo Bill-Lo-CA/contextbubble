@@ -43,6 +43,8 @@ chmod 600 .env
 `.env.docker.example` documents these Docker-oriented settings:
 
 - `CONTEXTBUBBLE_TOKEN`: optional fixed admin token; blank generates one.
+- `ASR_PROVIDER`: currently `whisper_cpp`; this keeps provider selection explicit
+  without adding optional ASR services to the default image.
 - `WHISPER_CPP_REF`: whisper.cpp version used when building the image.
 - `DOCKER_WHISPER_MODEL`, `DOCKER_WHISPER_MODEL_URL`,
   `DOCKER_WHISPER_MODEL_SHA256`, and `DOCKER_WHISPER_LANGUAGE`: container model

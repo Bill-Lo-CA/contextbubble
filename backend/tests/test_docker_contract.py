@@ -200,6 +200,7 @@ class DockerComposeContractTest(unittest.TestCase):
         "CONTEXTBUBBLE_PORT": "8000",
         "CONTEXTBUBBLE_DATA_DIR": "/data",
         "CONTEXTBUBBLE_VALIDATE_ASR_ON_START": "1",
+        "ASR_PROVIDER": "${ASR_PROVIDER:-whisper_cpp}",
         "YTDLP_CMD": "yt-dlp",
         "FFMPEG_CMD": "ffmpeg",
         "FFPROBE_CMD": "ffprobe",
@@ -275,6 +276,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn("/data/contextbubble.token", example)
         for default in (
             "WHISPER_CPP_REF=v1.8.6",
+            "ASR_PROVIDER=whisper_cpp",
             "DOCKER_OLLAMA_BASE_URL=http://host.docker.internal:11434",
             "AGENT_MODE=heuristic",
             "GEMINI_API_KEY=",

@@ -26,3 +26,9 @@ class WhisperCppProvider:
 
 
 whisper_cpp = WhisperCppProvider()
+ASR_PROVIDERS = {"whisper_cpp": whisper_cpp}
+
+
+def get_asr_provider(settings=None):
+    settings = settings or config.get_settings()
+    return ASR_PROVIDERS[settings.asr_provider]
