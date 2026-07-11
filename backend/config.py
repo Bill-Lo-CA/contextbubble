@@ -63,6 +63,7 @@ class Settings:
     whisper_model: str
     whisper_no_gpu: bool
     validate_asr_on_start: bool
+    asr_provider: str
     whisper_language: str
     backend_host: str
     backend_port: int
@@ -103,6 +104,7 @@ def load_settings(environ=None, env_file=None):
         whisper_model=values.get("WHISPER_MODEL", str(home / "tools/whisper.cpp/models/ggml-base.en.bin")),
         whisper_no_gpu=values.get("WHISPER_NO_GPU", "").lower() in TRUE_VALUES,
         validate_asr_on_start=values.get("CONTEXTBUBBLE_VALIDATE_ASR_ON_START", "").lower() in TRUE_VALUES,
+        asr_provider=values.get("ASR_PROVIDER", "whisper_cpp").lower(),
         whisper_language=values.get("WHISPER_LANGUAGE", "en").strip() or "en",
         backend_host=values.get("CONTEXTBUBBLE_HOST", "127.0.0.1").strip() or "127.0.0.1", backend_port=port,
         gemini_api_key=values.get("GEMINI_API_KEY", ""), gemini_model=values.get("GEMINI_MODEL", "gemini-2.5-flash"),
@@ -136,6 +138,7 @@ def validate_config(settings=None):
     if settings.agent_mode not in {"heuristic", "gemini", "ollama"}: raise ValueError("AGENT_MODE must be one of: gemini, heuristic, ollama")
     if settings.translation_mode not in {"gemini", "ollama"}: raise ValueError("TRANSLATION_MODE must be one of: gemini, ollama")
     if settings.transcript_block_splitter_mode not in {"heuristic", "gemini", "ollama"}: raise ValueError("TRANSCRIPT_BLOCK_SPLITTER_MODE must be one of: gemini, heuristic, ollama")
+    if settings.asr_provider != "whisper_cpp": raise ValueError("ASR_PROVIDER must be: whisper_cpp")
 def validate_runtime_for_asr(settings=None):
     settings = settings or get_settings()
     if not shutil.which(settings.ytdlp_cmd) and not Path(settings.ytdlp_cmd).exists(): raise FileNotFoundError("YTDLP_AUDIO_FAILED")
@@ -151,7 +154,7 @@ def demo_fixture_path(video_id): return Path(__file__).resolve().parent / "fixtu
 def __getattr__(name):
     settings = get_settings()
     aliases = {"DATA_DIR": settings.data_dir, "DB_FILE": settings.db_file, "JOB_LOG_FILE": settings.job_log_file, "MEDIA_DIR": settings.media_dir,
-        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids,
+        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "ASR_PROVIDER": settings.asr_provider, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids,
         "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v2", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
     if name in aliases: return aliases[name]
     raise AttributeError(name)
