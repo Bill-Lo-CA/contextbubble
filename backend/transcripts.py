@@ -201,12 +201,18 @@ def sentence_entries(segments, max_words=40):
         for sentence in parts[:complete_count]:
             emit(sentence)
             start_seconds = segment["start_seconds"]
+            end_seconds = segment["end_seconds"]
             source_ids = [segment["id"]]
         buffer = "" if complete_count == len(parts) else parts[-1]
-        if word_count(buffer) >= max_words:
+        if not buffer:
+            start_seconds = None
+            end_seconds = None
+            source_ids = []
+        elif word_count(buffer) >= max_words:
             emit(buffer)
             buffer = ""
             start_seconds = None
+            end_seconds = None
             source_ids = []
 
     if buffer:

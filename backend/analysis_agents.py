@@ -251,11 +251,10 @@ def validate_bubbles(reviewed, segments):
         concept_key = concept.lower()
         if concept_key in used_concepts:
             continue
-        if accepted and candidate["start_seconds"] - accepted[-1]["start_seconds"] < 30:
+        if any(abs(candidate["start_seconds"] - bubble["start_seconds"]) < 30 for bubble in accepted):
             continue
         used_concepts.add(concept_key)
         accepted.append({
-            "id": f"bubble-{len(accepted) + 1:03d}",
             "concept": concept,
             "anchor_segment_id": anchor["id"],
             "source_segment_ids": source_ids,
@@ -268,4 +267,7 @@ def validate_bubbles(reviewed, segments):
         })
         if len(accepted) == 8:
             break
+    accepted.sort(key=lambda bubble: bubble["start_seconds"])
+    for index, bubble in enumerate(accepted, 1):
+        bubble["id"] = f"bubble-{index:03d}"
     return accepted
