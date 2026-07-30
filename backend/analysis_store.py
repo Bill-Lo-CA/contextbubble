@@ -15,7 +15,7 @@ ANALYSES = {}
 def analysis_result(analysis_id):
     with connect_db() as conn:
         analysis = conn.execute("select * from analyses where analysis_id = ?", (analysis_id,)).fetchone()
-        if not analysis:
+        if not analysis or not analysis["cache_key"].endswith(f":{ANALYSIS_VERSION}"):
             return None
         rows = conn.execute(
             "select * from bubbles where analysis_id = ? order by start_seconds, bubble_id",
