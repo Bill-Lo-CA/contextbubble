@@ -79,11 +79,13 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
             if not force_refresh:
                 existing = conn.execute(
                     """
-                    select * from preparation_jobs
-                    where video_id = ? and learner_level = ? and source_policy = ? and status in ('queued', 'processing', 'ready')
-                    order by created_at desc limit 1
+                    select preparation_jobs.* from preparation_jobs
+                    left join analyses on analyses.analysis_id = preparation_jobs.analysis_id
+                    where preparation_jobs.video_id = ? and preparation_jobs.learner_level = ? and preparation_jobs.source_policy = ? and preparation_jobs.status in ('queued', 'processing', 'ready')
+                    and (preparation_jobs.status != 'ready' or analyses.cache_key like ?)
+                    order by preparation_jobs.created_at desc limit 1
                     """,
-                    (video_id, learner_level, source_policy),
+                    (video_id, learner_level, source_policy, f"%:{ANALYSIS_VERSION}"),
                 ).fetchone()
                 if existing:
                     job_id = existing["job_id"]

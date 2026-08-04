@@ -193,7 +193,8 @@ async def video_analysis(video_id: str, learner_level: str = "beginner", authori
     if learner_level not in LEARNER_LEVELS: return error("BAD_REQUEST", "invalid learner level", 400)
     with connect_db() as conn:
         row = conn.execute("select analysis_id from analyses where video_id = ? and learner_level = ? and status = 'completed' order by updated_at desc limit 1", (video_id, learner_level)).fetchone()
-    return json_response(analysis_result(row["analysis_id"])) if row else json_response({"status": "missing"}, 404)
+    result = analysis_result(row["analysis_id"]) if row else None
+    return json_response(result) if result else json_response({"status": "missing"}, 404)
 
 
 @analyses_router.get("/api/analysis/{analysis_id}")

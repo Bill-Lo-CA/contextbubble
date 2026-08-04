@@ -28,5 +28,28 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(subtitle_qc("um embeddings matter")["status"], "revised")
         self.assertEqual(translation_qc("cosine similarity", "相似度", glossary_terms=["cosine"])["status"], "needs_review")
 
+    def test_sentence_entries_own_their_time_ranges_and_sources(self):
+        def segment(identifier, start, end, text):
+            return {"id": identifier, "start_seconds": start, "end_seconds": end, "text": text}
+
+        def summary(entries):
+            return [(entry["text"], entry["start_seconds"], entry["end_seconds"], entry["source_segment_ids"]) for entry in entries]
+
+        self.assertEqual(summary(sentence_entries([
+            segment("one", 0, 1, "First."), segment("two", 2, 3, "Second."),
+        ])), [("First.", 0, 1, ["one"]), ("Second.", 2, 3, ["two"])])
+        self.assertEqual(summary(sentence_entries([
+            segment("three", 4, 5, "Third. Fourth."),
+        ])), [("Third.", 4, 5, ["three"]), ("Fourth.", 4, 5, ["three"])])
+        self.assertEqual(summary(sentence_entries([
+            segment("five", 6, 7, "This starts"), segment("six", 8, 9, "and ends."),
+        ])), [("This starts and ends.", 6, 9, ["five", "six"])])
+        self.assertEqual(summary(sentence_entries([
+            segment("seven", 10, 11, "One two three"), segment("eight", 12, 13, "Four five"),
+        ], max_words=3)), [("One two three", 10, 11, ["seven"]), ("Four five", 12, 13, ["eight"])])
+        self.assertEqual(summary(sentence_entries([
+            segment("nine", 14, 15, "Start of"), segment("ten", 16, 17, "a sentence. Next"), segment("eleven", 18, 19, "sentence ends."),
+        ])), [("Start of a sentence.", 14, 17, ["nine", "ten"]), ("Next sentence ends.", 16, 19, ["ten", "eleven"])])
+
 
 if __name__ == "__main__": unittest.main()
