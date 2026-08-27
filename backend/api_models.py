@@ -13,6 +13,11 @@ class PrepareVideoRequest(BaseModel):
     demo_mode: bool = False
 
 
+class GraphVideoRequest(BaseModel):
+    force_refresh: bool = False
+    demo_mode: bool = False
+
+
 class SubtitleUploadRequest(BaseModel):
     video_id: str = Field(max_length=20)
     filename: str = Field(default="", max_length=255)

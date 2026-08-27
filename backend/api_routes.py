@@ -6,13 +6,14 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from analysis_store import analysis_result, run_analysis_for_transcript
-from api_models import AnalysisRequest, PairRequest, PrepareVideoRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
+from api_models import AnalysisRequest, GraphVideoRequest, PairRequest, PrepareVideoRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
 from auth import pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_video_id
 from db import connect_db
+from graph_store import extraction_job_payload
 from job_events import preparation_events
 from media import ExternalCommandError, fetch_youtube_subtitles
-from preparation_jobs import create_or_reuse_job, job_payload
+from preparation_jobs import GRAPH_PLACEHOLDER_LEARNER_LEVEL, create_or_reuse_job, job_payload
 from providers import AgentProviderError, gemini_status
 from transcript_quality import caption_source_qc
 from transcripts import load_transcript, store_transcript
@@ -23,8 +24,9 @@ pairing_router = APIRouter()
 preparations_router = APIRouter()
 translations_router = APIRouter()
 analyses_router = APIRouter()
+graph_router = APIRouter()
 health_router = APIRouter()
-routers = (pairing_router, preparations_router, translations_router, analyses_router, health_router)
+routers = (pairing_router, preparations_router, translations_router, analyses_router, graph_router, health_router)
 
 
 def json_response(payload, status=200):
@@ -202,6 +204,30 @@ async def analysis(analysis_id: str, authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
     result = analysis_result(analysis_id)
     return json_response(result) if result else json_response({"status": "missing"}, 404)
+
+
+@graph_router.post("/api/videos/{video_id}/graph")
+async def create_graph_job(video_id: str, request: Request, authorization: str = Header("")):
+    if auth_error := require_auth(authorization): return auth_error
+    body = await read_model(request, GraphVideoRequest)
+    if isinstance(body, JSONResponse): return body
+    try:
+        job = create_or_reuse_job(video_id, GRAPH_PLACEHOLDER_LEARNER_LEVEL, body.force_refresh, body.demo_mode, job_kind="graph_extraction")
+        return ok(extraction_job_payload(job["job_id"]))
+    except ValueError as exc: return error("BAD_REQUEST", str(exc), 400)
+
+
+@graph_router.get("/api/graph/jobs/{job_id}")
+async def graph_job(job_id: str, authorization: str = Header("")):
+    if auth_error := require_auth(authorization): return auth_error
+    payload = await run_in_threadpool(extraction_job_payload, job_id)
+    return ok(payload) if payload else error("NOT_FOUND", "missing", 404)
+
+
+@graph_router.get("/api/graph/jobs/{job_id}/events")
+async def graph_job_events(job_id: str, authorization: str = Header("")):
+    if auth_error := require_auth(authorization): return auth_error
+    return ok({"events": preparation_events(job_id)})
 
 
 @health_router.get("/api/health")

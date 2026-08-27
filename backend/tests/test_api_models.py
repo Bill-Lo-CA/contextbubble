@@ -32,7 +32,9 @@ class ApiModelTests(unittest.TestCase):
                 "/api/preparations/{job_id}", "/api/preparations/{job_id}/events",
                 "/api/translations", "/api/translations/{translation_job_id}",
                 "/api/analyze", "/api/videos/{video_id}/analysis",
-                "/api/analysis/{analysis_id}", "/api/health",
+                "/api/analysis/{analysis_id}",
+                "/api/videos/{video_id}/graph", "/api/graph/jobs/{job_id}", "/api/graph/jobs/{job_id}/events",
+                "/api/health",
             },
         )
 
