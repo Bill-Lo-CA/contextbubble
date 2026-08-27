@@ -99,7 +99,7 @@ MIGRATIONS = (
             job_id text primary key references preparation_jobs(job_id) on delete cascade,
             video_id text not null references videos(video_id),
             transcript_id text not null references transcript_sources(transcript_id),
-            cache_key text not null unique,
+            cache_key text not null,
             status text not null check (status in ('queued','processing','ready','failed')),
             stage text not null,
             node_count integer default 0 check (node_count >= 0),
@@ -108,6 +108,7 @@ MIGRATIONS = (
             created_at text not null, updated_at text not null
         );
         create index if not exists idx_kg_extraction_jobs_lookup on kg_extraction_jobs(video_id, status, updated_at);
+        create index if not exists idx_kg_extraction_jobs_cache_key on kg_extraction_jobs(cache_key, status, updated_at);
 
         create table if not exists kg_extraction_events (
             event_id integer primary key autoincrement,
