@@ -227,6 +227,8 @@ async def graph_job(job_id: str, authorization: str = Header("")):
 @graph_router.get("/api/graph/jobs/{job_id}/events")
 async def graph_job_events(job_id: str, authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
+    payload = await run_in_threadpool(extraction_job_payload, job_id)
+    if not payload: return error("NOT_FOUND", "missing", 404)
     return ok({"events": preparation_events(job_id)})
 
 
