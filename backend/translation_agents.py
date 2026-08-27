@@ -1,12 +1,12 @@
-from config import GEMINI_API_KEY, GEMINI_MODEL, OLLAMA_BASE_URL, TRANSLATION_MODE, TRANSLATION_MODEL
-from providers import AgentProviderError, gemini_generate, ollama_generate
+from config import GEMINI_MODEL, TRANSLATION_MODE, TRANSLATION_MODEL
+from provider_registry import resolve_provider
+from providers import AgentProviderError
 from translation_cache import save_translation_cache, translation_decision
 
 
-def translation_generate(prompt):
-    if TRANSLATION_MODE == "gemini":
-        return gemini_generate(prompt, GEMINI_API_KEY, GEMINI_MODEL)
-    return ollama_generate(prompt, OLLAMA_BASE_URL, TRANSLATION_MODEL)
+def translation_generate(prompt, schema=None):
+    mode = "gemini" if TRANSLATION_MODE == "gemini" else "ollama"
+    return resolve_provider(mode, gemini_model=GEMINI_MODEL, ollama_model=TRANSLATION_MODEL).generate_json(prompt, schema=schema)
 
 def translate_segment(segment_id, source_text, context_before="", context_after="", target_language="zh-TW", force_refresh=False):
     decision = translation_decision(segment_id, source_text, context_before, context_after, target_language, force_refresh)
