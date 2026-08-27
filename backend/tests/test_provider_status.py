@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -72,6 +73,65 @@ class ProviderStatusTests(unittest.TestCase):
         self.assertEqual(status["status"], "ok")
         self.assertEqual(status["last_error_code"], None)
         self.assertEqual(status["total_requests"], 1)
+
+    def test_gemini_generate_includes_response_schema_when_provided(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(request.data.decode())
+            return FakeResponse()
+
+        with mock.patch.object(providers, "urlopen", side_effect=fake_urlopen):
+            providers.gemini_generate("{}", "test-key", "gemini-test", schema={"type": "object"})
+
+        self.assertEqual(captured["body"]["generationConfig"]["responseSchema"], {"type": "object"})
+
+    def test_gemini_generate_omits_response_schema_when_not_provided(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(request.data.decode())
+            return FakeResponse()
+
+        with mock.patch.object(providers, "urlopen", side_effect=fake_urlopen):
+            providers.gemini_generate("{}", "test-key", "gemini-test")
+
+        self.assertNotIn("responseSchema", captured["body"]["generationConfig"])
+
+    def test_ollama_generate_sends_schema_as_format_when_provided(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(request.data.decode())
+            return OllamaFakeResponse()
+
+        with mock.patch.object(providers, "urlopen", side_effect=fake_urlopen):
+            providers.ollama_generate("prompt", "http://example.invalid", "qwen-test", schema={"type": "object"})
+
+        self.assertEqual(captured["body"]["format"], {"type": "object"})
+
+    def test_ollama_generate_defaults_format_to_json_string(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(request.data.decode())
+            return OllamaFakeResponse()
+
+        with mock.patch.object(providers, "urlopen", side_effect=fake_urlopen):
+            providers.ollama_generate("prompt", "http://example.invalid", "qwen-test")
+
+        self.assertEqual(captured["body"]["format"], "json")
+
+
+class OllamaFakeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return b'{"response": "{\\"ok\\": true}"}'
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import json
 
-from config import AGENT_MODE, GEMINI_API_KEY, GEMINI_MODEL, OLLAMA_BASE_URL, OLLAMA_MODEL
-from providers import AgentProviderError, gemini_generate, ollama_generate
+from config import AGENT_MODE, GEMINI_MODEL, OLLAMA_MODEL
+from provider_registry import resolve_provider
 from transcripts import truncate_words, word_count
 
 
@@ -50,12 +50,11 @@ def context_segments(candidate, segments, radius=3):
     end = min(len(segments), max(indexes) + radius + 1)
     return [segment_by_id.get(segment["id"], segment) for segment in segments[start:end]]
 
-def llm_generate(prompt):
-    if AGENT_MODE == "gemini":
-        return gemini_generate(prompt, GEMINI_API_KEY, GEMINI_MODEL)
-    if AGENT_MODE == "ollama":
-        return ollama_generate(prompt, OLLAMA_BASE_URL, OLLAMA_MODEL)
-    raise AgentProviderError("ANALYSIS_FAILED", "no LLM provider selected")
+def llm_generate(prompt, schema=None):
+    return resolve_provider(
+        AGENT_MODE, gemini_model=GEMINI_MODEL, ollama_model=OLLAMA_MODEL,
+        disabled_error_code="ANALYSIS_FAILED", disabled_message="no LLM provider selected",
+    ).generate_json(prompt, schema=schema)
 
 def llm_concept_agent(segments, learner_level):
     prompt = f"""

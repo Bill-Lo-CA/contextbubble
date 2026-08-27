@@ -3,20 +3,20 @@ import json
 import re
 
 from analysis_agents import transcript_for_prompt, transcript_windows
-from config import GEMINI_API_KEY, GEMINI_MODEL, OLLAMA_BASE_URL, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSCRIPT_BLOCK_SPLITTER_MODEL, TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION
-from providers import AgentProviderError, gemini_generate, ollama_generate
+from config import GEMINI_MODEL, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSCRIPT_BLOCK_SPLITTER_MODEL, TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION
+from provider_registry import resolve_provider
+from providers import AgentProviderError
 from transcripts import sentence_entries, subtitle_qc_agent, word_count
 
 
 BLOCK_SPLIT_CACHE = {}
 
 
-def block_split_generate(prompt):
-    if TRANSCRIPT_BLOCK_SPLITTER_MODE == "gemini":
-        return gemini_generate(prompt, GEMINI_API_KEY, GEMINI_MODEL)
-    if TRANSCRIPT_BLOCK_SPLITTER_MODE == "ollama":
-        return ollama_generate(prompt, OLLAMA_BASE_URL, TRANSCRIPT_BLOCK_SPLITTER_MODEL)
-    raise AgentProviderError("BLOCK_SPLITTER_DISABLED", "transcript block splitter is heuristic")
+def block_split_generate(prompt, schema=None):
+    return resolve_provider(
+        TRANSCRIPT_BLOCK_SPLITTER_MODE, gemini_model=GEMINI_MODEL, ollama_model=TRANSCRIPT_BLOCK_SPLITTER_MODEL,
+        disabled_error_code="BLOCK_SPLITTER_DISABLED", disabled_message="transcript block splitter is heuristic",
+    ).generate_json(prompt, schema=schema)
 
 def segments_hash(segments):
     body = json.dumps([

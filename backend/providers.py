@@ -64,7 +64,7 @@ def extract_json(text):
     return json.loads(text)
 
 
-def gemini_generate(prompt, api_key, model):
+def gemini_generate(prompt, api_key, model, schema=None):
     if not api_key:
         update_gemini_status(
             status="not_configured",
@@ -76,9 +76,12 @@ def gemini_generate(prompt, api_key, model):
         )
         raise AgentProviderError("GEMINI_NOT_CONFIGURED", "GEMINI_API_KEY is not configured")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    generation_config = {"temperature": 0.2, "responseMimeType": "application/json"}
+    if schema is not None:
+        generation_config["responseSchema"] = schema
     data = json.dumps({
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+        "generationConfig": generation_config,
     }).encode()
     request = Request(url, data=data, headers={"content-type": "application/json"}, method="POST")
     update_gemini_status(
@@ -127,11 +130,10 @@ def gemini_generate(prompt, api_key, model):
 
 
 def ollama_generate(prompt, base_url, model, schema=None):
-    del schema
     data = json.dumps({
         "model": model,
         "prompt": prompt,
-        "format": "json",
+        "format": schema if schema is not None else "json",
         "stream": False,
         "options": {"temperature": 0.2},
     }).encode()
