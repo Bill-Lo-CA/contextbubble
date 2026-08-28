@@ -21,32 +21,38 @@ def edge_id_for(source_node_id, target_node_id, relation_type):
 
 
 def heuristic_window_candidates(video_id, window):
-    candidates = []
-    used = set()
+    candidates_by_concept = {}
     for segment in window:
         text = segment["text"]
         lowered = text.lower()
         concept = next((keyword for keyword in KEYWORDS if keyword in lowered), "")
         if not concept and len(text.split()) >= 4:
             concept = " ".join(text.split()[:3]).strip(".,:;!?").lower()
-        if not concept or concept in used:
+        if not concept:
             continue
-        used.add(concept)
-        candidates.append({
-            "node_id": node_id_for(video_id, concept),
-            "canonical_name": concept,
-            "node_type": "concept",
-            "short_summary": text[:160],
-            "confidence": 0.6,
-            "sources": [{
-                "source_id": segment["id"],
-                "segment_ids": [segment["id"]],
-                "start_seconds": segment["start_seconds"],
-                "end_seconds": segment["end_seconds"],
-                "evidence_text": text,
-            }],
-        })
-    return candidates
+        source = {
+            "source_id": segment["id"],
+            "segment_ids": [segment["id"]],
+            "start_seconds": segment["start_seconds"],
+            "end_seconds": segment["end_seconds"],
+            "evidence_text": text,
+        }
+        existing = candidates_by_concept.get(concept)
+        if existing:
+            # Same concept recurring within one window - keep every occurrence's
+            # evidence/timestamp instead of dropping all but the first (heuristic_extract_graph
+            # already does this same merge across windows; this mirrors it within a window).
+            existing["sources"].append(source)
+        else:
+            candidates_by_concept[concept] = {
+                "node_id": node_id_for(video_id, concept),
+                "canonical_name": concept,
+                "node_type": "concept",
+                "short_summary": text[:160],
+                "confidence": 0.6,
+                "sources": [source],
+            }
+    return list(candidates_by_concept.values())
 
 
 def heuristic_extract_graph(video_id, windows):
