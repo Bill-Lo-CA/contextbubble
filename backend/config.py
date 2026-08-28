@@ -72,6 +72,7 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
     agent_mode: str
+    graph_extraction_mode: str
     translation_mode: str
     translation_model: str
     transcript_block_splitter_mode: str
@@ -109,7 +110,9 @@ def load_settings(environ=None, env_file=None):
         backend_host=values.get("CONTEXTBUBBLE_HOST", "127.0.0.1").strip() or "127.0.0.1", backend_port=port,
         gemini_api_key=values.get("GEMINI_API_KEY", ""), gemini_model=values.get("GEMINI_MODEL", "gemini-2.5-flash"),
         ollama_base_url=values.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"), ollama_model=values.get("OLLAMA_MODEL", "qwen3:8b"),
-        agent_mode=values.get("AGENT_MODE", "heuristic").lower(), translation_mode=values.get("TRANSLATION_MODE", "ollama").lower(),
+        agent_mode=values.get("AGENT_MODE", "heuristic").lower(),
+        graph_extraction_mode=values.get("GRAPH_EXTRACTION_MODE", "heuristic").lower(),
+        translation_mode=values.get("TRANSLATION_MODE", "ollama").lower(),
         translation_model=values.get("TRANSLATION_MODEL", "qwen3:8b"), transcript_block_splitter_mode=values.get("TRANSCRIPT_BLOCK_SPLITTER_MODE", "ollama").lower(),
         transcript_block_splitter_model=values.get("TRANSCRIPT_BLOCK_SPLITTER_MODEL", "llama3.2:3b"),
         demo_video_ids=frozenset(item.strip() for item in values.get("DEMO_VIDEO_IDS", "").split(",") if item.strip()),
@@ -136,6 +139,7 @@ def iso_from_timestamp(timestamp): return datetime.fromtimestamp(timestamp, time
 def validate_config(settings=None):
     settings = settings or get_settings()
     if settings.agent_mode not in {"heuristic", "gemini", "ollama"}: raise ValueError("AGENT_MODE must be one of: gemini, heuristic, ollama")
+    if settings.graph_extraction_mode not in {"heuristic", "gemini", "ollama"}: raise ValueError("GRAPH_EXTRACTION_MODE must be one of: gemini, heuristic, ollama")
     if settings.translation_mode not in {"gemini", "ollama"}: raise ValueError("TRANSLATION_MODE must be one of: gemini, ollama")
     if settings.transcript_block_splitter_mode not in {"heuristic", "gemini", "ollama"}: raise ValueError("TRANSCRIPT_BLOCK_SPLITTER_MODE must be one of: gemini, heuristic, ollama")
     if settings.asr_provider != "whisper_cpp": raise ValueError("ASR_PROVIDER must be: whisper_cpp")
@@ -154,7 +158,7 @@ def demo_fixture_path(video_id): return Path(__file__).resolve().parent / "fixtu
 def __getattr__(name):
     settings = get_settings()
     aliases = {"DATA_DIR": settings.data_dir, "DB_FILE": settings.db_file, "JOB_LOG_FILE": settings.job_log_file, "MEDIA_DIR": settings.media_dir,
-        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "ASR_PROVIDER": settings.asr_provider, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids,
-        "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v4", "GRAPH_VERSION": "kg-mvp-heuristic-v1", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
+        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "ASR_PROVIDER": settings.asr_provider, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "GRAPH_EXTRACTION_MODE": settings.graph_extraction_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids,
+        "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v4", "GRAPH_VERSION": "kg-mvp-llm-v1", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
     if name in aliases: return aliases[name]
     raise AttributeError(name)

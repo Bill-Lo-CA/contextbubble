@@ -171,6 +171,12 @@ class RuntimeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ASR_PROVIDER"):
             config.validate_config(config.load_settings(env_without_dotenv({"ASR_PROVIDER": "unknown"})))
 
+    def test_graph_extraction_mode_defaults_to_heuristic_and_rejects_unknown_values(self):
+        config = load_config()
+        self.assertEqual(config.load_settings(env_without_dotenv()).graph_extraction_mode, "heuristic")
+        with self.assertRaisesRegex(ValueError, "GRAPH_EXTRACTION_MODE"):
+            config.validate_config(config.load_settings(env_without_dotenv({"GRAPH_EXTRACTION_MODE": "unknown"})))
+
     def test_asr_provider_selection_uses_active_settings(self):
         from asr_provider import get_asr_provider, whisper_cpp
         import config
