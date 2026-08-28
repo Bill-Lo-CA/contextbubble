@@ -224,5 +224,129 @@ class GraphExtractionTests(unittest.TestCase):
         self.assertIsNone(extraction_job_payload(bubble["job_id"]))
 
 
+def make_node(node_id, name):
+    return {"node_id": node_id, "canonical_name": name, "node_type": "concept", "short_summary": name, "confidence": 0.6, "sources": []}
+
+
+class SaveNodesAndEdgesRelationStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.context = config.settings_override(replace(config.get_settings(), data_dir=Path(self.tempdir.name)))
+        self.context.__enter__()
+        init_db()
+        with connect_db() as conn:
+            conn.execute("insert into videos (video_id, created_at, updated_at) values ('video-rs', 'now', 'now')")
+            conn.execute(
+                "insert into transcript_sources (transcript_id, video_id, filename, source, content_hash, segment_count, created_at) "
+                "values ('transcript-rs', 'video-rs', 'x', 'test', 'hash', 0, 'now')"
+            )
+
+    def tearDown(self):
+        self.context.__exit__(None, None, None)
+        self.tempdir.cleanup()
+
+    def make_job(self, job_id):
+        with connect_db() as conn:
+            conn.execute(
+                "insert into preparation_jobs (job_id, video_id, learner_level, source_policy, status, stage, job_kind, created_at, updated_at) "
+                "values (?, 'video-rs', 'intermediate', 'live', 'processing', 'extracting_graph', 'graph_extraction', 'now', 'now')",
+                (job_id,),
+            )
+        graph_store.upsert_extraction_job(job_id, "video-rs", "transcript-rs", f"cache-{job_id}", status="processing", stage="extracting_graph")
+
+    def edge(self, edge_id, relation_type, **overrides):
+        base = {
+            "edge_id": edge_id, "source_node_id": "node-a", "target_node_id": "node-b",
+            "relation_type": relation_type, "confidence": 0.7, "evidence_source_ids": [], "directional": 1,
+        }
+        base.update(overrides)
+        return base
+
+    def test_edge_without_relation_status_defaults_to_accepted_and_approved(self):
+        # Regression guard: heuristic-path edges never set relation_status at all.
+        job_id = "job-rs-default"
+        self.make_job(job_id)
+        graph_store.save_nodes_and_edges(
+            job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("edge-1", "related_to")],
+        )
+        with connect_db() as conn:
+            edge_row = conn.execute("select relation_status from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()
+            type_row = conn.execute("select status from kg_relation_types where relation_type = 'related_to'").fetchone()
+        self.assertEqual(edge_row["relation_status"], "accepted")
+        self.assertEqual(type_row["status"], "approved")
+
+    def test_new_proposed_relation_type_persists_as_proposed_with_description_and_proposer(self):
+        job_id = "job-rs-proposed"
+        self.make_job(job_id)
+        graph_store.save_nodes_and_edges(
+            job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("edge-1", "influences", relation_status="proposed", proposed_relation_description="A shapes B")],
+        )
+        with connect_db() as conn:
+            edge_row = conn.execute("select relation_status from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()
+            type_row = conn.execute(
+                "select status, description, proposed_by_job_id from kg_relation_types where relation_type = 'influences'"
+            ).fetchone()
+        self.assertEqual(edge_row["relation_status"], "proposed")
+        self.assertEqual(dict(type_row), {"status": "proposed", "description": "A shapes B", "proposed_by_job_id": job_id})
+
+    def test_edge_for_already_approved_type_is_upgraded_to_accepted(self):
+        with connect_db() as conn:
+            conn.execute(
+                "insert into kg_relation_types (relation_type, description, status, created_at) values ('reviewed_ok', 'reviewed_ok', 'approved', 'now')"
+            )
+        job_id = "job-rs-approved"
+        self.make_job(job_id)
+        graph_store.save_nodes_and_edges(
+            job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("edge-1", "reviewed_ok", relation_status="proposed", proposed_relation_description="x")],
+        )
+        with connect_db() as conn:
+            edge_row = conn.execute("select relation_status from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()
+        self.assertEqual(edge_row["relation_status"], "accepted")
+
+    def test_edge_for_already_rejected_type_is_not_created(self):
+        with connect_db() as conn:
+            conn.execute(
+                "insert into kg_relation_types (relation_type, description, status, created_at) values ('reviewed_bad', 'reviewed_bad', 'rejected', 'now')"
+            )
+        job_id = "job-rs-rejected"
+        self.make_job(job_id)
+        graph_store.save_nodes_and_edges(
+            job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("edge-1", "reviewed_bad", relation_status="proposed", proposed_relation_description="x")],
+        )
+        with connect_db() as conn:
+            count = conn.execute("select count(*) from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_save_nodes_and_edges_rolls_back_entirely_on_edge_insert_failure(self):
+        job_id = "job-rs-rollback"
+        self.make_job(job_id)
+        with connect_db() as conn:
+            conn.execute(
+                f"""create trigger fail_edges_{job_id.replace('-', '_')} before insert on kg_edges
+                when new.extraction_job_id = '{job_id}'
+                begin select raise(abort, 'forced failure'); end"""
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            graph_store.save_nodes_and_edges(
+                job_id, "video-rs", "transcript-rs",
+                [make_node("node-a", "a"), make_node("node-b", "b")],
+                [self.edge("edge-1", "related_to")],
+            )
+        with connect_db() as conn:
+            counts = [
+                conn.execute(f"select count(*) from {table} where extraction_job_id = ?", (job_id,)).fetchone()[0]
+                for table in ("kg_nodes", "kg_node_sources", "kg_edges")
+            ]
+        self.assertEqual(counts, [0, 0, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -143,26 +143,68 @@ def save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges):
                 for node in nodes for source in node.get("sources", [])
             ],
         )
-        # insert-or-ignore the distinct relation types used by this batch once,
-        # rather than once per edge (many edges commonly share a handful of types).
-        relation_types = {edge["relation_type"] for edge in edges}
+        # Reconcile each edge's tentative relation_status ("accepted" for fixed-
+        # vocabulary types, "proposed" for a fresh propose:<slug>) against any
+        # decision a reviewer has already made for that relation_type: a type
+        # already approved upgrades new edges straight to "accepted"; a type
+        # already rejected means the edge must not be created at all; a type
+        # still proposed (or brand new) keeps the edge "proposed".
+        tentatively_proposed_types = {edge["relation_type"] for edge in edges if edge.get("relation_status") == "proposed"}
+        existing_status = {}
+        if tentatively_proposed_types:
+            placeholders = ",".join("?" for _ in tentatively_proposed_types)
+            existing_status = {
+                row["relation_type"]: row["status"]
+                for row in conn.execute(
+                    f"select relation_type, status from kg_relation_types where relation_type in ({placeholders})",
+                    list(tentatively_proposed_types),
+                )
+            }
+
+        final_edges = []
+        for edge in edges:
+            relation_status = edge.get("relation_status", "accepted")
+            if relation_status == "proposed":
+                current = existing_status.get(edge["relation_type"])
+                if current == "rejected":
+                    continue
+                if current == "approved":
+                    relation_status = "accepted"
+            final_edges.append((edge, relation_status))
+
+        # insert-or-ignore only relation_types with no existing row - insert-or-ignore
+        # otherwise leaves a prior reviewer decision (status/proposed_by_job_id)
+        # untouched, which is intentional: this batch never overrides a past review.
+        new_relation_types = {}
+        for edge, relation_status in final_edges:
+            relation_type = edge["relation_type"]
+            if relation_type in existing_status or relation_type in new_relation_types:
+                continue
+            status = "proposed" if relation_status == "proposed" else "approved"
+            description = edge.get("proposed_relation_description") or relation_type
+            new_relation_types[relation_type] = (status, description, job_id if status == "proposed" else None)
         conn.executemany(
-            "insert or ignore into kg_relation_types (relation_type, description, status, created_at) values (?, ?, 'approved', ?)",
-            [(relation_type, relation_type, timestamp) for relation_type in relation_types],
+            "insert or ignore into kg_relation_types (relation_type, description, status, proposed_by_job_id, created_at) values (?, ?, ?, ?, ?)",
+            [
+                (relation_type, description, status, proposed_by_job_id, timestamp)
+                for relation_type, (status, description, proposed_by_job_id) in new_relation_types.items()
+            ],
         )
         conn.executemany(
             """insert into kg_edges
-            (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, evidence_source_ids, directional, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, relation_status,
+             confidence, evidence_source_ids, directional, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(extraction_job_id, source_node_id, target_node_id, relation_type) do update set
-                confidence = excluded.confidence, evidence_source_ids = excluded.evidence_source_ids,
-                directional = excluded.directional, updated_at = excluded.updated_at""",
+                relation_status = excluded.relation_status, confidence = excluded.confidence,
+                evidence_source_ids = excluded.evidence_source_ids, directional = excluded.directional,
+                updated_at = excluded.updated_at""",
             [
                 (
-                    job_id, edge["edge_id"], edge["source_node_id"], edge["target_node_id"], edge["relation_type"],
+                    job_id, edge["edge_id"], edge["source_node_id"], edge["target_node_id"], edge["relation_type"], relation_status,
                     edge["confidence"], json.dumps(edge.get("evidence_source_ids", [])), edge.get("directional", 1), timestamp, timestamp,
                 )
-                for edge in edges
+                for edge, relation_status in final_edges
             ],
         )
 
