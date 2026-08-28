@@ -118,6 +118,48 @@ class MigrationTests(unittest.TestCase):
             columns = [row[1] for row in conn.execute("pragma table_info(preparation_jobs)")]
             self.assertEqual(columns.count("job_kind"), 1)
 
+    def test_snapshot_migration_rolls_back_rename_and_index_failures(self):
+        tables = (
+            "kg_extraction_events", "kg_node_sources", "kg_edges", "kg_node_embeddings",
+            "kg_node_detail_cache", "kg_user_knowledge", "kg_nodes", "kg_extraction_jobs",
+        )
+        indexes = (
+            "idx_kg_extraction_jobs_lookup", "idx_kg_extraction_jobs_cache_key",
+            "idx_kg_extraction_events_job", "idx_kg_nodes_name",
+        )
+        with connect_db() as conn:
+            conn.executescript(";".join(f"create table {table} (id text)" for table in tables))
+            conn.executescript("""
+                create index idx_kg_extraction_jobs_lookup on kg_extraction_jobs(id);
+                create index idx_kg_extraction_jobs_cache_key on kg_extraction_jobs(id);
+                create index idx_kg_extraction_events_job on kg_extraction_events(id);
+                create index idx_kg_nodes_name on kg_nodes(id);
+            """)
+
+        def deny_node_index_drop(action, name, _table, _database, _source):
+            if action == sqlite3.SQLITE_DROP_INDEX and name == "idx_kg_nodes_name":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        with self.assertRaises(sqlite3.DatabaseError):
+            with connect_db() as conn:
+                self.assertFalse(conn.in_transaction)
+                conn.set_authorizer(deny_node_index_drop)
+                migrate_graph_snapshot_schema(conn)
+
+        with connect_db() as conn:
+            for table in tables:
+                self.assertIsNotNone(
+                    conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone()
+                )
+                self.assertIsNone(
+                    conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (f"{table}_legacy",)).fetchone()
+                )
+            self.assertEqual(
+                {row[0] for row in conn.execute("select name from sqlite_master where type = 'index'")},
+                set(indexes),
+            )
+
     def test_snapshot_migration_resumes_after_interruption_and_normalizes_bad_timestamps(self):
         with connect_db() as conn:
             conn.executescript("""
@@ -449,7 +491,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(conn.execute("select count(*) from kg_user_knowledge where extraction_job_id = 'job-old'").fetchone()[0], 1)
 
     def test_unassignable_legacy_job_is_discarded_without_sinking_unrelated_jobs(self):
-        # Discard a broken job and an unowned node without affecting a valid job.
+        # Discard broken or schema-incompatible jobs and unowned nodes without affecting a valid job.
         with connect_db() as conn:
             conn.executescript("""
                 create table videos (video_id text primary key, created_at text not null, updated_at text not null);
@@ -526,6 +568,15 @@ class MigrationTests(unittest.TestCase):
                 insert into kg_nodes values ('node-orphan', 'orphan concept', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
                 insert into kg_node_sources values ('node-orphan', 'segment-orphan', 'video-a', 'transcript-a', '[]', 5, 10, null, 'orphan evidence', 'now');
 
+                insert into preparation_jobs values ('job-reciprocal', 'video-a', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
+                insert into kg_extraction_jobs values ('job-reciprocal', 'video-a', 'transcript-a', 'reciprocal-cache', 'ready', 'ready', 2, 2, null, null, 'now', 'now');
+                insert into kg_nodes values ('node-reciprocal-a', 'reciprocal a', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                insert into kg_nodes values ('node-reciprocal-b', 'reciprocal b', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                insert into kg_node_sources values ('node-reciprocal-a', 'segment-reciprocal-a', 'video-a', 'transcript-a', '[]', 10, 15, 'job-reciprocal', 'evidence a', 'now');
+                insert into kg_node_sources values ('node-reciprocal-b', 'segment-reciprocal-b', 'video-a', 'transcript-a', '[]', 15, 20, 'job-reciprocal', 'evidence b', 'now');
+                insert into kg_edges values ('edge-reciprocal-ab', 'node-reciprocal-a', 'node-reciprocal-b', 'related_to', 'accepted', 0.5, '[]', 0, 'job-reciprocal', 'now', 'now');
+                insert into kg_edges values ('edge-reciprocal-ba', 'node-reciprocal-b', 'node-reciprocal-a', 'related_to', 'accepted', 0.5, '[]', 0, 'job-reciprocal', 'now', 'now');
+
                 insert into preparation_jobs values ('job-good', 'video-a', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
                 insert into kg_extraction_jobs values ('job-good', 'video-a', 'transcript-a', 'good-cache', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
                 insert into kg_nodes values ('node-good', 'good concept', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
@@ -549,6 +600,13 @@ class MigrationTests(unittest.TestCase):
             )
             self.assertIsNone(conn.execute("select 1 from kg_nodes where node_id = 'node-orphan'").fetchone())
             self.assertIsNone(conn.execute("select 1 from kg_node_sources where node_id = 'node-orphan'").fetchone())
+            self.assertIsNone(conn.execute("select 1 from kg_extraction_jobs where job_id = 'job-reciprocal'").fetchone())
+            self.assertEqual(
+                tuple(conn.execute("select status, stage from preparation_jobs where job_id = 'job-reciprocal'").fetchone()),
+                ("failed", "failed"),
+            )
+            for table in ("kg_nodes", "kg_node_sources", "kg_edges"):
+                self.assertEqual(conn.execute(f"select count(*) from {table} where extraction_job_id = 'job-reciprocal'").fetchone()[0], 0)
             for table in (
                 "kg_extraction_events_legacy", "kg_node_sources_legacy", "kg_edges_legacy", "kg_node_embeddings_legacy",
                 "kg_node_detail_cache_legacy", "kg_user_knowledge_legacy", "kg_nodes_legacy", "kg_extraction_jobs_legacy",
