@@ -37,6 +37,8 @@ class MigrationTests(unittest.TestCase):
         init_db()
         with connect_db() as conn:
             self.assertEqual(conn.execute("select name from schema_migrations where version = 4").fetchone()[0], "knowledge_graph_job_snapshots")
+            self.assertIsNone(conn.execute("select 1 from sqlite_master where type = 'table' and name = 'kg_extraction_events'").fetchone())
+            self.assertIsNone(conn.execute("select 1 from sqlite_master where type = 'index' and name = 'idx_kg_extraction_events_job'").fetchone())
             node_columns = {row["name"] for row in conn.execute("pragma table_info(kg_nodes)")}
             edge_columns = {row["name"] for row in conn.execute("pragma table_info(kg_edges)")}
             self.assertIn("extraction_job_id", node_columns)
@@ -262,7 +264,7 @@ class MigrationTests(unittest.TestCase):
             # Calling it again once fully migrated must be a no-op, not an error.
             migrate_graph_snapshot_schema(conn)
 
-    def test_existing_v3_graph_schema_is_upgraded_without_losing_graph_rows(self):
+    def test_existing_v3_graph_schema_copies_shared_nodes_per_job(self):
         with connect_db() as conn:
             conn.executescript("""
                 create table videos (video_id text primary key, created_at text not null, updated_at text not null);
@@ -329,9 +331,18 @@ class MigrationTests(unittest.TestCase):
                 insert into videos values ('video-old', 'now', 'now');
                 insert into transcript_sources values ('transcript-old', 'video-old', 'x', 'test', 'hash', 1, '{}', 'now');
                 insert into preparation_jobs values ('job-old', 'video-old', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
+                insert into preparation_jobs values ('job-old-2', 'video-old', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
                 insert into kg_extraction_jobs values ('job-old', 'video-old', 'transcript-old', 'same-cache', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
+                insert into kg_extraction_jobs values ('job-old-2', 'video-old', 'transcript-old', 'same-cache-2', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
                 insert into kg_nodes values ('node-old', 'embedding', 'concept', 'summary', null, 'pending', 0.6, 'unknown', '[]', 'now', 'now');
+                insert into kg_nodes values ('node-target', 'target', 'entity', 'target summary', null, 'pending', 0.7, 'unknown', '[]', 'now', 'now');
                 insert into kg_node_sources values ('node-old', 'segment-001', 'video-old', 'transcript-old', '[\"segment-001\"]', 0, 5, 'job-old', 'evidence', 'now');
+                insert into kg_node_sources values ('node-old', 'segment-002', 'video-old', 'transcript-old', '[\"segment-002\"]', 5, 10, 'job-old-2', 'evidence-2', 'now');
+                insert into kg_relation_types values ('supports', 'support', 'approved', null, 'now');
+                insert into kg_edges values ('edge-old', 'node-old', 'node-target', 'supports', 'accepted', 0.8, '[]', 1, 'job-old', 'now', 'now');
+                insert into kg_node_embeddings values ('node-old', 'model', 2, '[0.1,0.2]', 'now');
+                insert into kg_node_detail_cache values ('detail-old', 'node-old', 'lens-hash', '{}', 'provider', 'model', 'v1', 'details', '[]', 0.8, 'ready', 'now', 'now');
+                insert into kg_user_knowledge values ('node-old', 'understood', 0.8, 'now', 'notes', 'now');
             """)
         init_db()
         with connect_db() as conn:
@@ -342,9 +353,106 @@ class MigrationTests(unittest.TestCase):
                 "insert into kg_extraction_jobs values ('job-new', 'video-old', 'transcript-old', 'same-cache', 'ready', 'ready', 1, 0, null, null, 'now', 'now')"
             )
             self.assertEqual(conn.execute("select count(*) from kg_extraction_jobs where cache_key = 'same-cache'").fetchone()[0], 2)
-            row = conn.execute("select extraction_job_id, evidence_text from kg_node_sources").fetchone()
+            row = conn.execute("select extraction_job_id, evidence_text from kg_node_sources where extraction_job_id = 'job-old'").fetchone()
             self.assertEqual(dict(row), {"extraction_job_id": "job-old", "evidence_text": "evidence"})
-            self.assertEqual(conn.execute("select count(*) from kg_nodes where extraction_job_id = 'job-old'").fetchone()[0], 1)
+            self.assertEqual(conn.execute("select count(*) from kg_nodes where extraction_job_id = 'job-old'").fetchone()[0], 2)
+            self.assertEqual(conn.execute("select count(*) from kg_nodes where extraction_job_id = 'job-old-2'").fetchone()[0], 1)
+            self.assertEqual(
+                {row[0] for row in conn.execute("select extraction_job_id from kg_nodes where node_id = 'node-old'" )},
+                {"job-old", "job-old-2"},
+            )
+            self.assertEqual(conn.execute("select count(*) from kg_edges where extraction_job_id = 'job-old'").fetchone()[0], 1)
+            self.assertEqual(tuple(conn.execute("select node_count, edge_count from kg_extraction_jobs where job_id = 'job-old'").fetchone()), (2, 1))
+            self.assertEqual(tuple(conn.execute("select node_count, edge_count from kg_extraction_jobs where job_id = 'job-old-2'").fetchone()), (1, 0))
+            self.assertEqual(conn.execute("select count(*) from kg_node_embeddings where extraction_job_id = 'job-old'").fetchone()[0], 1)
+            self.assertEqual(conn.execute("select count(*) from kg_node_embeddings where extraction_job_id = 'job-old-2'").fetchone()[0], 1)
+            self.assertEqual(conn.execute("select count(*) from kg_node_detail_cache where extraction_job_id = 'job-old'").fetchone()[0], 1)
+            self.assertEqual(conn.execute("select count(*) from kg_user_knowledge where extraction_job_id = 'job-old'").fetchone()[0], 1)
+
+    def test_unassignable_legacy_graph_is_discarded_and_parent_failed(self):
+        with connect_db() as conn:
+            conn.executescript("""
+                create table videos (video_id text primary key, created_at text not null, updated_at text not null);
+                create table preparation_jobs (
+                    job_id text primary key, video_id text not null, learner_level text not null,
+                    source_policy text not null default 'live', status text not null, stage text not null,
+                    created_at text not null, updated_at text not null, job_kind text not null default 'bubble_analysis'
+                );
+                create table transcript_sources (
+                    transcript_id text primary key, video_id text not null, filename text not null, source text not null,
+                    content_hash text not null, segment_count integer not null, metadata text default '{}', created_at text not null
+                );
+                create table schema_migrations (version integer primary key, name text not null, applied_at text not null);
+                insert into schema_migrations values (1, 'initial_schema', 'now');
+                insert into schema_migrations values (2, 'persisted_translation_jobs', 'now');
+                insert into schema_migrations values (3, 'knowledge_graph_extraction', 'now');
+                create table kg_extraction_jobs (
+                    job_id text primary key, video_id text not null, transcript_id text not null,
+                    cache_key text not null unique, status text not null, stage text not null,
+                    node_count integer default 0, edge_count integer default 0, error_code text, message text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_extraction_events (
+                    event_id integer primary key autoincrement, job_id text not null, event_type text not null,
+                    stage text, metadata text, created_at text not null
+                );
+                create table kg_nodes (
+                    node_id text primary key, canonical_name text not null, node_type text not null,
+                    short_summary text not null, detailed_explanation text, detail_status text not null default 'pending',
+                    confidence real not null, aliases text not null default '[]', created_at text not null, updated_at text not null
+                );
+                create table kg_node_sources (
+                    node_id text not null, source_id text not null, video_id text, transcript_id text,
+                    segment_ids text not null default '[]', start_seconds real, end_seconds real,
+                    extraction_job_id text, evidence_text text, created_at text not null,
+                    primary key (node_id, source_id)
+                );
+                create table kg_relation_types (
+                    relation_type text primary key, description text not null,
+                    status text not null default 'approved', proposed_by_job_id text, created_at text not null
+                );
+                create table kg_edges (
+                    edge_id text primary key, source_node_id text not null, target_node_id text not null,
+                    relation_type text not null, relation_status text not null default 'accepted',
+                    confidence real not null, evidence_source_ids text not null default '[]',
+                    directional integer not null default 1, extraction_job_id text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_node_embeddings (
+                    node_id text primary key, model text not null, dims integer not null, vector text not null, created_at text not null
+                );
+                create table kg_node_detail_cache (
+                    cache_key text primary key, node_id text not null, lens_hash text not null, lens_json text not null,
+                    provider text not null, model text not null, prompt_version text not null,
+                    detail_markdown text, evidence_json text not null default '[]', confidence real,
+                    status text not null, created_at text not null, updated_at text not null
+                );
+                create table kg_user_knowledge (
+                    node_id text primary key, status text not null default 'unknown',
+                    confidence real, last_reviewed_at text, notes text, updated_at text not null
+                );
+                insert into videos values ('video-orphan', 'now', 'now');
+                insert into transcript_sources values ('transcript-orphan', 'video-orphan', 'x', 'test', 'hash', 1, '{}', 'now');
+                insert into preparation_jobs values ('job-orphan', 'video-orphan', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
+                insert into kg_extraction_jobs values ('job-orphan', 'video-orphan', 'transcript-orphan', 'orphan-cache', 'ready', 'ready', 4, 2, null, null, 'now', 'now');
+                insert into kg_extraction_events values (1, 'job-orphan', 'started', 'extracting', '{}', 'now');
+                insert into kg_nodes values ('node-orphan', 'orphan', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                insert into kg_node_sources values ('node-orphan', 'segment-001', 'video-orphan', 'transcript-orphan', '[]', 0, 5, null, 'evidence', 'now');
+            """)
+        init_db()
+        with connect_db() as conn:
+            self.assertEqual(conn.execute("select count(*) from kg_extraction_jobs").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from kg_nodes").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from kg_edges").fetchone()[0], 0)
+            self.assertEqual(
+                tuple(conn.execute("select status, stage from preparation_jobs where job_id = 'job-orphan'").fetchone()),
+                ("failed", "failed"),
+            )
+            for table in (
+                "kg_extraction_events_legacy", "kg_node_sources_legacy", "kg_edges_legacy", "kg_node_embeddings_legacy",
+                "kg_node_detail_cache_legacy", "kg_user_knowledge_legacy", "kg_nodes_legacy", "kg_extraction_jobs_legacy",
+            ):
+                self.assertIsNone(conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone())
 
     def test_legacy_schema_upgrades_without_losing_rows(self):
         with connect_db() as conn:
