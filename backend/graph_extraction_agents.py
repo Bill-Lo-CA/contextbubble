@@ -1,4 +1,4 @@
-import hashlib
+from db import short_hash_id
 
 
 KEYWORDS = (
@@ -9,11 +9,11 @@ KEYWORDS = (
 
 
 def node_id_for(video_id, canonical_name):
-    return f"node-{hashlib.sha256(f'{video_id}:{canonical_name.lower()}'.encode()).hexdigest()[:12]}"
+    return short_hash_id("node", video_id, canonical_name.lower())
 
 
 def edge_id_for(source_node_id, target_node_id, relation_type):
-    return f"edge-{hashlib.sha256(f'{source_node_id}:{target_node_id}:{relation_type}'.encode()).hexdigest()[:12]}"
+    return short_hash_id("edge", source_node_id, target_node_id, relation_type)
 
 
 def heuristic_window_candidates(video_id, window):

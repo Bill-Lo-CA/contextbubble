@@ -1,11 +1,10 @@
-import hashlib
 import threading
 import time
 
 from analysis_store import analysis_result
 from semantic_splitter import semantic_sentence_entries
 from config import ANALYSIS_VERSION, GRAPH_VERSION, LEARNER_LEVELS, now_iso, validate_video_id
-from db import connect_db
+from db import connect_db, short_hash_id, update_allowed_columns
 from job_events import add_preparation_event
 from transcripts import load_transcript, sentence_entries
 
@@ -15,30 +14,41 @@ JOB_CREATION_LOCK = threading.Lock()
 ACTIVE_PREPARATIONS = set()
 
 
-JOB_KINDS = {"bubble_analysis", "graph_extraction"}
 # graph_extraction jobs ignore learner_level (their personalization axis is
 # lens/goal, not learner level) but the column stays NOT NULL, so callers
 # creating a graph job should pass this placeholder.
 GRAPH_PLACEHOLDER_LEARNER_LEVEL = "intermediate"
 
+# Per-job-kind dedupe strategy for create_or_reuse_job: which cache table to join
+# against to check "is there already a fresh, ready result for this job", and
+# whether learner_level participates in the dedupe key. Adding a new job kind
+# means adding one entry here rather than another branch in create_or_reuse_job.
+JOB_KIND_DEDUPE = {
+    "bubble_analysis": {
+        "cache_join_sql": "left join analyses on analyses.analysis_id = preparation_jobs.analysis_id",
+        "cache_key_column": "analyses.cache_key",
+        "version": ANALYSIS_VERSION,
+        "filter_learner_level": True,
+    },
+    "graph_extraction": {
+        "cache_join_sql": "left join kg_extraction_jobs on kg_extraction_jobs.job_id = preparation_jobs.job_id",
+        "cache_key_column": "kg_extraction_jobs.cache_key",
+        "version": GRAPH_VERSION,
+        "filter_learner_level": False,
+    },
+}
+JOB_KINDS = set(JOB_KIND_DEDUPE)
+
 
 JOB_UPDATE_COLUMNS = {
     "status", "stage", "transcript_source", "transcript_id", "analysis_id",
     "duration_seconds", "chunks_total", "chunks_completed", "progress",
-    "error_code", "message", "force_refresh", "updated_at",
+    "error_code", "message", "force_refresh",
 }
 
 
 def update_job(job_id, **values):
-    if not values:
-        return
-    unknown = set(values) - JOB_UPDATE_COLUMNS
-    if unknown:
-        raise ValueError(f"invalid preparation job update fields: {', '.join(sorted(unknown))}")
-    values["updated_at"] = now_iso()
-    assignments = ", ".join(f"{key} = ?" for key in values)
-    with connect_db() as conn:
-        conn.execute(f"update preparation_jobs set {assignments} where job_id = ?", (*values.values(), job_id))
+    update_allowed_columns("preparation_jobs", "job_id", job_id, JOB_UPDATE_COLUMNS, **values)
 
 
 def job_payload(job_id, include_ready=True, include_transcript=False, include_sentence_entries=False):
@@ -69,7 +79,7 @@ def job_payload(job_id, include_ready=True, include_transcript=False, include_se
             payload["sentence_entries"] = sentence_entries(segments)
         else:
             payload["sentence_entries"] = semantic_sentence_entries(segments)
-    if include_ready and payload["status"] == "ready":
+    if include_ready and payload["status"] == "ready" and payload["job_kind"] == "bubble_analysis":
         analysis = analysis_result(payload["analysis_id"])
         payload["bubbles"] = analysis["bubbles"] if analysis else []
         payload["bubble_count"] = len(payload["bubbles"])
@@ -86,28 +96,23 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
     with JOB_CREATION_LOCK:
         with connect_db() as conn:
             if not force_refresh:
-                if job_kind == "graph_extraction":
-                    existing = conn.execute(
-                        """
-                        select preparation_jobs.* from preparation_jobs
-                        left join kg_extraction_jobs on kg_extraction_jobs.job_id = preparation_jobs.job_id
-                        where preparation_jobs.video_id = ? and preparation_jobs.job_kind = ? and preparation_jobs.source_policy = ? and preparation_jobs.status in ('queued', 'processing', 'ready')
-                        and (preparation_jobs.status != 'ready' or kg_extraction_jobs.cache_key like ?)
-                        order by preparation_jobs.created_at desc limit 1
-                        """,
-                        (video_id, job_kind, source_policy, f"%:{GRAPH_VERSION}"),
-                    ).fetchone()
-                else:
-                    existing = conn.execute(
-                        """
-                        select preparation_jobs.* from preparation_jobs
-                        left join analyses on analyses.analysis_id = preparation_jobs.analysis_id
-                        where preparation_jobs.video_id = ? and preparation_jobs.learner_level = ? and preparation_jobs.job_kind = ? and preparation_jobs.source_policy = ? and preparation_jobs.status in ('queued', 'processing', 'ready')
-                        and (preparation_jobs.status != 'ready' or analyses.cache_key like ?)
-                        order by preparation_jobs.created_at desc limit 1
-                        """,
-                        (video_id, learner_level, job_kind, source_policy, f"%:{ANALYSIS_VERSION}"),
-                    ).fetchone()
+                dedupe = JOB_KIND_DEDUPE[job_kind]
+                learner_level_filter = "and preparation_jobs.learner_level = ? " if dedupe["filter_learner_level"] else ""
+                params = [video_id]
+                if dedupe["filter_learner_level"]:
+                    params.append(learner_level)
+                params += [job_kind, source_policy, f"%:{dedupe['version']}"]
+                existing = conn.execute(
+                    f"""
+                    select preparation_jobs.* from preparation_jobs
+                    {dedupe["cache_join_sql"]}
+                    where preparation_jobs.video_id = ? {learner_level_filter}
+                    and preparation_jobs.job_kind = ? and preparation_jobs.source_policy = ? and preparation_jobs.status in ('queued', 'processing', 'ready')
+                    and (preparation_jobs.status != 'ready' or {dedupe["cache_key_column"]} like ?)
+                    order by preparation_jobs.created_at desc limit 1
+                    """,
+                    params,
+                ).fetchone()
                 if existing:
                     job_id = existing["job_id"]
                     include_ready = existing["status"] == "ready"
@@ -123,8 +128,7 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
 
 
 def create_job_row(conn, video_id, learner_level, source_policy, force_refresh, job_kind="bubble_analysis"):
-    seed = f"{video_id}:{learner_level}:{job_kind}:{time.time_ns()}:{ANALYSIS_VERSION}"
-    job_id = f"prepare-{hashlib.sha256(seed.encode()).hexdigest()[:12]}"
+    job_id = short_hash_id("prepare", video_id, learner_level, job_kind, time.time_ns(), ANALYSIS_VERSION)
     timestamp = now_iso()
     conn.execute(
         "insert into videos (video_id, created_at, updated_at) values (?, ?, ?) on conflict(video_id) do update set updated_at = excluded.updated_at",

@@ -8,6 +8,27 @@ from media import ExternalCommandError, command_error
 from preparation_jobs import finish_preparation_thread, update_job
 
 
+def run_bubble_analysis(job_id, video_id, learner_level, transcript, force_refresh):
+    add_preparation_event(job_id, "analysis_started", "concept_agent")
+    analysis = run_analysis_for_transcript(video_id, learner_level, transcript["transcript_id"], force_refresh)
+    add_preparation_event(job_id, "analysis_completed", "ready", {"bubble_count": len(analysis.get("bubbles", []))})
+    update_job(job_id, status="ready", stage="ready", analysis_id=analysis["analysis_id"], progress=1.0, message=None, error_code=None)
+
+
+def run_graph_extraction(job_id, video_id, learner_level, transcript, force_refresh):
+    add_preparation_event(job_id, "graph_extraction_started", "extracting_graph")
+    result = run_graph_extraction_for_transcript(video_id, transcript["transcript_id"], job_id, force_refresh)
+    add_preparation_event(job_id, "graph_extraction_completed", "ready", {"node_count": result.get("node_count", 0), "edge_count": result.get("edge_count", 0)})
+    update_job(job_id, status="ready", stage="ready", progress=1.0, message=None, error_code=None)
+
+
+# Per-job-kind processing stage (set once the transcript is ready, before dispatch)
+# and handler (does the work + marks the job ready). Adding a new job kind means
+# adding one entry here rather than another branch in run_preparation_job.
+JOB_KIND_PROCESSING_STAGE = {"bubble_analysis": "concept_agent", "graph_extraction": "extracting_graph"}
+JOB_KIND_HANDLERS = {"bubble_analysis": run_bubble_analysis, "graph_extraction": run_graph_extraction}
+
+
 def run_preparation_job(job_id):
     try:
         with connect_db() as conn:
@@ -25,22 +46,13 @@ def run_preparation_job(job_id):
         transcript, source, duration = transcript_for_job(job_id, video_id, source_policy)
         update_job(
             job_id,
-            stage="extracting_graph" if job_kind == "graph_extraction" else "concept_agent",
+            stage=JOB_KIND_PROCESSING_STAGE[job_kind],
             transcript_id=transcript["transcript_id"],
             transcript_source=source,
             duration_seconds=duration,
             progress=0.92,
         )
-        if job_kind == "graph_extraction":
-            add_preparation_event(job_id, "graph_extraction_started", "extracting_graph")
-            result = run_graph_extraction_for_transcript(video_id, transcript["transcript_id"], job_id, force_refresh)
-            add_preparation_event(job_id, "graph_extraction_completed", "ready", {"node_count": result.get("node_count", 0), "edge_count": result.get("edge_count", 0)})
-            update_job(job_id, status="ready", stage="ready", progress=1.0, message=None, error_code=None)
-        else:
-            add_preparation_event(job_id, "analysis_started", "concept_agent")
-            analysis = run_analysis_for_transcript(video_id, learner_level, transcript["transcript_id"], force_refresh)
-            add_preparation_event(job_id, "analysis_completed", "ready", {"bubble_count": len(analysis.get("bubbles", []))})
-            update_job(job_id, status="ready", stage="ready", analysis_id=analysis["analysis_id"], progress=1.0, message=None, error_code=None)
+        JOB_KIND_HANDLERS[job_kind](job_id, video_id, learner_level, transcript, force_refresh)
         add_preparation_event(job_id, "job_ready", "ready")
     except FileNotFoundError as error:
         update_job(job_id, status="failed", stage="failed", error_code=str(error), message=str(error))

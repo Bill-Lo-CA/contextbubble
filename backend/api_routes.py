@@ -212,7 +212,7 @@ async def create_graph_job(video_id: str, request: Request, authorization: str =
     body = await read_model(request, GraphVideoRequest)
     if isinstance(body, JSONResponse): return body
     try:
-        job = create_or_reuse_job(video_id, GRAPH_PLACEHOLDER_LEARNER_LEVEL, body.force_refresh, body.demo_mode, job_kind="graph_extraction")
+        job = await run_in_threadpool(create_or_reuse_job, video_id, GRAPH_PLACEHOLDER_LEARNER_LEVEL, body.force_refresh, body.demo_mode, job_kind="graph_extraction")
         return ok(extraction_job_payload(job["job_id"]))
     except ValueError as exc: return error("BAD_REQUEST", str(exc), 400)
 
