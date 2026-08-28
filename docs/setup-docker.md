@@ -50,6 +50,8 @@ chmod 600 .env
   `DOCKER_WHISPER_MODEL_SHA256`, and `DOCKER_WHISPER_LANGUAGE`: container model
   path, pinned download, integrity hash, and language.
 - `AGENT_MODE`: `heuristic`, `gemini`, or `ollama`.
+- `GRAPH_EXTRACTION_MODE`: `heuristic`, `gemini`, or `ollama`; controls the
+  knowledge-graph node/relation extraction pipeline independently of `AGENT_MODE`.
 - `GEMINI_API_KEY` and `GEMINI_MODEL`: Gemini credentials and model selection.
 - `DOCKER_OLLAMA_BASE_URL` and `OLLAMA_MODEL`: Ollama endpoint and model. The
   default `http://host.docker.internal:11434` reaches Ollama on the host.

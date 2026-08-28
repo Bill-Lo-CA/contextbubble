@@ -26,6 +26,7 @@ services:
       # CPU-only invariant; do not make configurable in this Compose service.
       WHISPER_NO_GPU: "1"
       AGENT_MODE: "${AGENT_MODE:-heuristic}"
+      GRAPH_EXTRACTION_MODE: "${GRAPH_EXTRACTION_MODE:-heuristic}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
       OLLAMA_BASE_URL: "${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"

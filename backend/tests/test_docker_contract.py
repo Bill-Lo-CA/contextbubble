@@ -216,6 +216,7 @@ class DockerComposeContractTest(unittest.TestCase):
         "WHISPER_LANGUAGE": "${DOCKER_WHISPER_LANGUAGE:-en}",
         "WHISPER_NO_GPU": "1",
         "AGENT_MODE": "${AGENT_MODE:-heuristic}",
+        "GRAPH_EXTRACTION_MODE": "${GRAPH_EXTRACTION_MODE:-heuristic}",
         "GEMINI_API_KEY": "${GEMINI_API_KEY:-}",
         "GEMINI_MODEL": "${GEMINI_MODEL:-gemini-2.5-flash}",
         "OLLAMA_BASE_URL": "${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}",
@@ -279,6 +280,7 @@ class DockerComposeContractTest(unittest.TestCase):
             "ASR_PROVIDER=whisper_cpp",
             "DOCKER_OLLAMA_BASE_URL=http://host.docker.internal:11434",
             "AGENT_MODE=heuristic",
+            "GRAPH_EXTRACTION_MODE=heuristic",
             "GEMINI_API_KEY=",
             "GEMINI_MODEL=gemini-2.5-flash",
             "OLLAMA_MODEL=qwen3:8b",
@@ -319,6 +321,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn('WHISPER_CPP_REF: "v1.8.6"', rendered)
         self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
+        self.assertIn('GRAPH_EXTRACTION_MODE: "heuristic"', rendered)
 
     def test_compose_fixes_cpu_mode_without_dotenv_override(self):
         compose = self.read_compose()
@@ -338,6 +341,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn('WHISPER_MODEL: "/models/ggml-base.en.bin"', rendered)
         self.assertIn('OLLAMA_BASE_URL: "http://host.docker.internal:11434"', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
+        self.assertIn('GRAPH_EXTRACTION_MODE: "heuristic"', rendered)
         self.assertIn('OLLAMA_MODEL: "qwen3:8b"', rendered)
         self.assertIn('TRANSLATION_MODE: "ollama"', rendered)
         self.assertIn('TRANSLATION_MODEL: "qwen3:8b"', rendered)
