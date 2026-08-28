@@ -151,6 +151,10 @@ def migrate_graph_snapshot_schema(conn):
             return
 
     if not legacy_present:
+        # Existing v3 databases reach this migration outside a transaction. Keep
+        # every rename and index drop atomic until executescript commits the rebuild.
+        if not conn.in_transaction:
+            conn.execute("begin")
         if conn.execute(
             "select 1 from sqlite_master where type = 'table' and name = 'kg_extraction_events'"
         ).fetchone() is not None:
@@ -200,8 +204,8 @@ def migrate_graph_snapshot_schema(conn):
         )
 
     # A node id was global in v3, so it can be copied into every known extraction
-    # job that references it. A dangling reference or missing parent makes the
-    # *owning job* unmigratable - collect the specific job ids, not a yes/no flag.
+    # job that references it. A dangling reference, missing parent, or reciprocal
+    # undirected pair makes the owning job unmigratable under the v4 constraints.
     bad_job_ids = [
         row["job_id"] for row in conn.execute(
             """
@@ -229,6 +233,15 @@ def migrate_graph_snapshot_schema(conn):
                 where edges.extraction_job_id is null or jobs.job_id is null
                     or source_nodes.node_id is null or target_nodes.node_id is null
                     or kg_relation_types.relation_type is null
+                union all
+                select edges.extraction_job_id as job_id from kg_edges_legacy edges
+                join kg_edges_legacy reverse_edges
+                    on reverse_edges.extraction_job_id = edges.extraction_job_id
+                    and reverse_edges.relation_type = edges.relation_type
+                    and reverse_edges.source_node_id = edges.target_node_id
+                    and reverse_edges.target_node_id = edges.source_node_id
+                    and reverse_edges.edge_id != edges.edge_id
+                where edges.directional = 0 and reverse_edges.directional = 0
             ) where job_id is not null
             """
         ).fetchall()
