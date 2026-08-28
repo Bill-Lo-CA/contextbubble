@@ -127,9 +127,9 @@ def clone_graph_snapshot(source_job_id, target_job_id):
         conn.execute(
             """insert into kg_nodes
             (extraction_job_id, node_id, canonical_name, node_type, short_summary, detailed_explanation, detail_status,
-             confidence, knowledge_status, aliases, created_at, updated_at)
+             confidence, aliases, created_at, updated_at)
             select ?, node_id, canonical_name, node_type, short_summary, detailed_explanation, detail_status,
-                   confidence, knowledge_status, aliases, created_at, updated_at
+                   confidence, aliases, created_at, updated_at
             from kg_nodes where extraction_job_id = ?""",
             (target_job_id, source_job_id),
         )
