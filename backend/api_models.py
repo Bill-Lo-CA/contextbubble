@@ -18,6 +18,11 @@ class GraphVideoRequest(BaseModel):
     demo_mode: bool = False
 
 
+class RelationTypeReviewRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+    description: str | None = Field(default=None, max_length=500)
+
+
 class SubtitleUploadRequest(BaseModel):
     video_id: str = Field(max_length=20)
     filename: str = Field(default="", max_length=255)

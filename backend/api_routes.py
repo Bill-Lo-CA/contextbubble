@@ -6,11 +6,12 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from analysis_store import analysis_result, run_analysis_for_transcript
-from api_models import AnalysisRequest, GraphVideoRequest, PairRequest, PrepareVideoRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
+from api_models import AnalysisRequest, GraphVideoRequest, PairRequest, PrepareVideoRequest, RelationTypeReviewRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
 from auth import pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
-from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_video_id
+from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, GRAPH_EXTRACTION_MODE, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_video_id
 from db import connect_db
-from graph_store import extraction_job_payload
+from graph_extraction_agents import RELATION_TYPE_SLUG_PATTERN
+from graph_store import extraction_job_payload, list_relation_types, review_relation_type
 from job_events import preparation_events
 from media import ExternalCommandError, fetch_youtube_subtitles
 from preparation_jobs import GRAPH_PLACEHOLDER_LEARNER_LEVEL, create_or_reuse_job, job_payload
@@ -232,7 +233,26 @@ async def graph_job_events(job_id: str, authorization: str = Header("")):
     return ok({"events": preparation_events(job_id)})
 
 
+@graph_router.get("/api/graph/relation-types")
+async def relation_types(status: str = "proposed", authorization: str = Header("")):
+    if auth_error := require_auth(authorization): return auth_error
+    if status not in ("proposed", "approved", "rejected"): return error("BAD_REQUEST", "invalid status", 400)
+    return ok({"relation_types": await run_in_threadpool(list_relation_types, status)})
+
+
+@graph_router.post("/api/graph/relation-types/{relation_type}/review")
+async def review_relation_type_route(relation_type: str, request: Request, authorization: str = Header("")):
+    if auth_error := require_auth(authorization): return auth_error
+    if not RELATION_TYPE_SLUG_PATTERN.match(relation_type): return error("BAD_REQUEST", "invalid relation_type", 400)
+    body = await read_model(request, RelationTypeReviewRequest)
+    if isinstance(body, JSONResponse): return body
+    result = await run_in_threadpool(review_relation_type, relation_type, body.decision, body.description)
+    if result is None: return error("NOT_FOUND", "missing", 404)
+    if result == "conflict": return error("RELATION_TYPE_REVIEW_CONFLICT", "relation type already has an opposing decision", 409)
+    return ok(result)
+
+
 @health_router.get("/api/health")
 async def health(authorization: str = Header("")):
     if not valid_bearer_token(authorization): return error("UNAUTHORIZED", "unauthorized", 401)
-    return json_response({"status": "healthy", "api_version": API_VERSION, "agent_mode": AGENT_MODE, "gemini_model": GEMINI_MODEL if AGENT_MODE == "gemini" else None, "gemini": {**gemini_status(GEMINI_API_KEY, GEMINI_MODEL), "active_for": {"analysis": AGENT_MODE == "gemini", "translation": TRANSLATION_MODE == "gemini", "block_splitter": TRANSCRIPT_BLOCK_SPLITTER_MODE == "gemini"}}, "translation_mode": TRANSLATION_MODE, "translation_model": TRANSLATION_MODEL if TRANSLATION_MODE == "ollama" else GEMINI_MODEL})
+    return json_response({"status": "healthy", "api_version": API_VERSION, "agent_mode": AGENT_MODE, "gemini_model": GEMINI_MODEL if AGENT_MODE == "gemini" else None, "gemini": {**gemini_status(GEMINI_API_KEY, GEMINI_MODEL), "active_for": {"analysis": AGENT_MODE == "gemini", "translation": TRANSLATION_MODE == "gemini", "block_splitter": TRANSCRIPT_BLOCK_SPLITTER_MODE == "gemini", "graph_extraction": GRAPH_EXTRACTION_MODE == "gemini"}}, "translation_mode": TRANSLATION_MODE, "translation_model": TRANSLATION_MODEL if TRANSLATION_MODE == "ollama" else GEMINI_MODEL, "graph_extraction_mode": GRAPH_EXTRACTION_MODE})

@@ -280,3 +280,49 @@ def clone_graph_snapshot(source_job_id, target_job_id, video_id, transcript_id, 
             from kg_user_knowledge where extraction_job_id = ?""",
             (target_job_id, source_job_id),
         )
+
+
+def list_relation_types(status):
+    with connect_db() as conn:
+        rows = conn.execute(
+            """select rt.relation_type, rt.description, rt.status, rt.proposed_by_job_id,
+                      count(e.edge_id) as edge_count, count(distinct e.extraction_job_id) as job_count
+               from kg_relation_types rt
+               left join kg_edges e on e.relation_type = rt.relation_type
+               where rt.status = ?
+               group by rt.relation_type
+               order by rt.created_at""",
+            (status,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def review_relation_type(relation_type, decision, description=None):
+    # Returns None (relation_type not found -> caller maps to 404), the string
+    # "conflict" (reversing an already-finalized opposite decision -> 409), or
+    # a result dict (success, decision applied or already in that state -> 200).
+    target_status = "approved" if decision == "approve" else "rejected"
+    with connect_db() as conn:
+        row = conn.execute("select status from kg_relation_types where relation_type = ?", (relation_type,)).fetchone()
+        if not row:
+            return None
+        current_status = row["status"]
+        if current_status not in ("proposed", target_status):
+            return "conflict"
+        if description:
+            conn.execute(
+                "update kg_relation_types set status = ?, description = ? where relation_type = ?",
+                (target_status, description, relation_type),
+            )
+        else:
+            conn.execute("update kg_relation_types set status = ? where relation_type = ?", (target_status, relation_type))
+        if current_status == target_status:
+            # Idempotent repeat of a decision already applied - no edges to touch.
+            return {"relation_type": relation_type, "status": target_status, "affected_edge_count": 0}
+        edge_relation_status = "accepted" if decision == "approve" else "rejected"
+        cursor = conn.execute(
+            "update kg_edges set relation_status = ?, updated_at = ? where relation_type = ? and relation_status = 'proposed'",
+            (edge_relation_status, now_iso(), relation_type),
+        )
+        affected = cursor.rowcount
+    return {"relation_type": relation_type, "status": target_status, "affected_edge_count": affected}

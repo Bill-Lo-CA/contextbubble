@@ -9,7 +9,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from api_models import PrepareVideoRequest, TranslationRequest
+from api_models import PrepareVideoRequest, RelationTypeReviewRequest, TranslationRequest
 from api_routes import routers
 
 
@@ -21,6 +21,10 @@ class ApiModelTests(unittest.TestCase):
     def test_translation_rejects_oversized_language(self):
         with self.assertRaises(ValidationError):
             TranslationRequest(target_language="x" * 33)
+
+    def test_relation_type_review_rejects_unknown_decision(self):
+        with self.assertRaises(ValidationError):
+            RelationTypeReviewRequest(decision="maybe")
 
     def test_expected_routes_are_registered(self):
         paths = {route.path for router in routers for route in router.routes}
@@ -34,6 +38,7 @@ class ApiModelTests(unittest.TestCase):
                 "/api/analyze", "/api/videos/{video_id}/analysis",
                 "/api/analysis/{analysis_id}",
                 "/api/videos/{video_id}/graph", "/api/graph/jobs/{job_id}", "/api/graph/jobs/{job_id}/events",
+                "/api/graph/relation-types", "/api/graph/relation-types/{relation_type}/review",
                 "/api/health",
             },
         )
