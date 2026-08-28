@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import config
 from db import connect_db, init_db
+import graph_extraction_agents
 import graph_runner
 import graph_store
 import preparation_jobs
@@ -201,6 +202,48 @@ class GraphExtractionTests(unittest.TestCase):
         self.assertEqual({row["source_id"] for row in source_rows}, {"segment-001"})
         self.assertEqual({row["transcript_id"] for row in source_rows}, {first["transcript_id"], second["transcript_id"]})
 
+    def test_different_extraction_modes_never_share_a_cached_snapshot(self):
+        transcript = store_transcript(
+            "kg-video-modes", "video.vtt",
+            segments=[{"id": "segment-001", "start_seconds": 0, "end_seconds": 5, "text": "An embedding maps text into a vector space."}],
+            source="test",
+        )
+        heuristic_job = self.make_job("kg-video-modes")
+        run_graph_extraction_for_transcript("kg-video-modes", transcript["transcript_id"], heuristic_job)
+
+        llm_nodes = [{
+            "node_id": "node-llm", "canonical_name": "llm concept", "node_type": "concept",
+            "short_summary": "s", "confidence": 0.9, "sources": [],
+        }]
+        ollama_job = self.make_job("kg-video-modes", force_refresh=True)
+        # Real config changes are seen consistently by every module that snapshots
+        # GRAPH_EXTRACTION_MODE at import time (graph_store, graph_extraction_agents,
+        # graph_runner) - patch all three so this test reflects an actual mode switch.
+        with mock.patch.object(graph_store, "GRAPH_EXTRACTION_MODE", "ollama"), \
+             mock.patch.object(graph_extraction_agents, "GRAPH_EXTRACTION_MODE", "ollama"), \
+             mock.patch.object(graph_runner, "GRAPH_EXTRACTION_MODE", "ollama"), \
+             mock.patch.object(graph_extraction_agents, "llm_extract_graph", return_value=(llm_nodes, [])):
+            run_graph_extraction_for_transcript("kg-video-modes", transcript["transcript_id"], ollama_job)
+
+        with connect_db() as conn:
+            cache_keys = {
+                row["job_id"]: row["cache_key"]
+                for row in conn.execute(
+                    "select job_id, cache_key from kg_extraction_jobs where job_id in (?, ?)", (heuristic_job, ollama_job)
+                )
+            }
+            ollama_names = [
+                row["canonical_name"] for row in
+                conn.execute("select canonical_name from kg_nodes where extraction_job_id = ?", (ollama_job,)).fetchall()
+            ]
+            heuristic_names = [
+                row["canonical_name"] for row in
+                conn.execute("select canonical_name from kg_nodes where extraction_job_id = ?", (heuristic_job,)).fetchall()
+            ]
+        self.assertNotEqual(cache_keys[heuristic_job], cache_keys[ollama_job])
+        self.assertEqual(ollama_names, ["llm concept"])
+        self.assertNotIn("llm concept", heuristic_names)
+
     def test_extraction_failure_marks_graph_job_failed(self):
         transcript = store_transcript(
             "kg-video-4", "video.vtt",
@@ -208,7 +251,7 @@ class GraphExtractionTests(unittest.TestCase):
             source="test",
         )
         job_id = self.make_job("kg-video-4")
-        with mock.patch.object(graph_runner, "heuristic_extract_graph", side_effect=RuntimeError("boom")):
+        with mock.patch.object(graph_runner, "extract_graph_for_video", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
                 run_graph_extraction_for_transcript("kg-video-4", transcript["transcript_id"], job_id)
         with connect_db() as conn:

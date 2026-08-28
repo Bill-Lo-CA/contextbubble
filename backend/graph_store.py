@@ -50,7 +50,7 @@ def upsert_extraction_job(job_id, video_id, transcript_id, cache_key, status, st
         )
 
 
-EXTRACTION_JOB_UPDATE_COLUMNS = {"status", "stage", "node_count", "edge_count", "error_code", "message"}
+EXTRACTION_JOB_UPDATE_COLUMNS = {"cache_key", "status", "stage", "node_count", "edge_count", "error_code", "message"}
 
 
 def update_extraction_job(job_id, **values):
