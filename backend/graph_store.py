@@ -1,11 +1,28 @@
+import hashlib
 import json
 
-from config import GRAPH_VERSION, now_iso
+from config import GEMINI_MODEL, GRAPH_EXTRACTION_MODE, GRAPH_VERSION, OLLAMA_MODEL, now_iso
 from db import connect_db
 
 
-def graph_extraction_cache_key(video_id, content_hash):
-    return f"{video_id}:{content_hash}:{GRAPH_VERSION}"
+def graph_extraction_pipeline_signature(extraction_mode=None, model=None):
+    # A single opaque, fixed-length token standing in for (GRAPH_VERSION, mode,
+    # model). Model values like Ollama's default "qwen3:8b" already contain ":",
+    # so a plain ":"-joined string before hashing is not enough on its own -
+    # ("ollama", "qwen3:8b") and ("ollama:qwen3", "8b") would concatenate to the
+    # identical string and hash identically. Length-prefix each field so the
+    # concatenation is unambiguous regardless of what characters a field contains.
+    mode = extraction_mode or GRAPH_EXTRACTION_MODE
+    resolved_model = model
+    if resolved_model is None:
+        resolved_model = {"gemini": GEMINI_MODEL, "ollama": OLLAMA_MODEL}.get(mode, "")
+    encoded = "".join(f"{len(field)}:{field}" for field in (GRAPH_VERSION, mode, resolved_model))
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    return digest[:16]
+
+
+def graph_extraction_cache_key(video_id, content_hash, extraction_mode=None, model=None):
+    return f"{video_id}:{content_hash}:{graph_extraction_pipeline_signature(extraction_mode, model)}"
 
 
 def latest_ready_extraction_by_cache_key(cache_key):
