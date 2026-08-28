@@ -1,6 +1,12 @@
 import hashlib
 
 
+# Relation types whose (source, target) pair order carries no meaning - kept
+# in sync with the set used to seed/validate LLM-classified relations later
+# in this module. "related_to" is the only member today (heuristic path).
+UNDIRECTED_RELATION_TYPES = {"related_to"}
+
+
 KEYWORDS = (
     "embedding", "embeddings", "cosine similarity", "retrieval augmented generation",
     "retrieval", "generation", "vector database", "vector", "vectors", "transcript",
@@ -14,7 +20,11 @@ def node_id_for(video_id, canonical_name):
 
 
 def edge_id_for(source_node_id, target_node_id, relation_type):
-    if relation_type == "related_to":
+    # Any undirected relation type must normalize pair order the same way the
+    # DB's idx_kg_edges_undirected_unique index does (min/max), not just the
+    # single literal "related_to" - otherwise two edges classified in opposite
+    # orders get different edge_ids in memory but collide on that unique index.
+    if relation_type in UNDIRECTED_RELATION_TYPES:
         source_node_id, target_node_id = sorted((source_node_id, target_node_id))
     digest = hashlib.sha256(f"{source_node_id}:{target_node_id}:{relation_type}".encode()).hexdigest()
     return f"edge-{digest[:12]}"
