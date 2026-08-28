@@ -193,11 +193,10 @@ def migrate_graph_snapshot_schema(conn):
         if not job_ids:
             return
         conn.executemany("insert or ignore into _kg_migration_bad_jobs (job_id) values (?)", [(j,) for j in job_ids])
-        placeholders = ",".join("?" for _ in job_ids)
-        conn.execute(f"delete from kg_extraction_jobs where job_id in ({placeholders})", job_ids)
+        conn.execute("delete from kg_extraction_jobs where job_id in (select job_id from _kg_migration_bad_jobs)")
         conn.execute(
-            f"update preparation_jobs set status = 'failed', stage = 'failed' where job_id in ({placeholders})",
-            job_ids,
+            "update preparation_jobs set status = 'failed', stage = 'failed' "
+            "where job_id in (select job_id from _kg_migration_bad_jobs)"
         )
 
     # A node id was global in v3, so it can be copied into every known extraction

@@ -449,10 +449,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(conn.execute("select count(*) from kg_user_knowledge where extraction_job_id = 'job-old'").fetchone()[0], 1)
 
     def test_unassignable_legacy_job_is_discarded_without_sinking_unrelated_jobs(self):
-        # One job's data is structurally broken (an edge pointing at a node that
-        # doesn't exist); a second, unrelated job's data is entirely valid. Codex
-        # flagged that the original global "any bad row -> wipe every migrated job"
-        # check would have discarded job-good here too - it must survive untouched.
+        # Discard a broken job and an unowned node without affecting a valid job.
         with connect_db() as conn:
             conn.executescript("""
                 create table videos (video_id text primary key, created_at text not null, updated_at text not null);
@@ -526,6 +523,9 @@ class MigrationTests(unittest.TestCase):
                 -- dangling target_node_id: 'node-missing' does not exist in kg_nodes -> job-bad is structurally broken.
                 insert into kg_edges values ('edge-bad', 'node-bad', 'node-missing', 'related_to', 'accepted', 0.5, '[]', 1, 'job-bad', 'now', 'now');
 
+                insert into kg_nodes values ('node-orphan', 'orphan concept', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                insert into kg_node_sources values ('node-orphan', 'segment-orphan', 'video-a', 'transcript-a', '[]', 5, 10, null, 'orphan evidence', 'now');
+
                 insert into preparation_jobs values ('job-good', 'video-a', 'intermediate', 'live', 'ready', 'ready', 'now', 'now', 'graph_extraction');
                 insert into kg_extraction_jobs values ('job-good', 'video-a', 'transcript-a', 'good-cache', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
                 insert into kg_nodes values ('node-good', 'good concept', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
@@ -547,6 +547,8 @@ class MigrationTests(unittest.TestCase):
                 conn.execute("select canonical_name from kg_nodes where extraction_job_id = 'job-good'").fetchone()[0],
                 "good concept",
             )
+            self.assertIsNone(conn.execute("select 1 from kg_nodes where node_id = 'node-orphan'").fetchone())
+            self.assertIsNone(conn.execute("select 1 from kg_node_sources where node_id = 'node-orphan'").fetchone())
             for table in (
                 "kg_extraction_events_legacy", "kg_node_sources_legacy", "kg_edges_legacy", "kg_node_embeddings_legacy",
                 "kg_node_detail_cache_legacy", "kg_user_knowledge_legacy", "kg_nodes_legacy", "kg_extraction_jobs_legacy",
