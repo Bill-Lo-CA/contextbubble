@@ -170,95 +170,98 @@ def migrate_graph_snapshot_schema(conn):
         ):
             conn.execute(f"drop index if exists {index}")
 
-        conn.executescript(GRAPH_TABLES_SQL)
+    # Runs every time we reach here, not only on the first (not-yet-renamed) pass:
+    # if the process died partway through this executescript() on a prior attempt,
+    # rebuild_done/legacy_present can both already be true on resume, with some
+    # v4 tables still missing. GRAPH_TABLES_SQL is entirely `if not exists`, so
+    # re-running it here just fills in whatever didn't get created yet.
+    conn.executescript(GRAPH_TABLES_SQL)
 
     legacy_tables = (
         "kg_extraction_events_legacy", "kg_node_sources_legacy", "kg_edges_legacy", "kg_node_embeddings_legacy",
         "kg_node_detail_cache_legacy", "kg_user_knowledge_legacy", "kg_nodes_legacy", "kg_extraction_jobs_legacy",
     )
 
-    def discard_legacy_batch():
+    # Structurally-broken or incompletely-migrated jobs are discarded individually -
+    # one bad legacy row must not sink every other, unrelated job in the batch.
+    # kg_nodes/kg_extraction_jobs cascade-delete to every other kg_* table, so
+    # deleting from kg_extraction_jobs alone is enough to fully unwind a job.
+    conn.execute("create temporary table if not exists _kg_migration_bad_jobs (job_id text primary key)")
+    conn.execute("delete from _kg_migration_bad_jobs")
+
+    def discard_jobs(job_ids):
+        if not job_ids:
+            return
+        conn.executemany("insert or ignore into _kg_migration_bad_jobs (job_id) values (?)", [(j,) for j in job_ids])
+        placeholders = ",".join("?" for _ in job_ids)
+        conn.execute(f"delete from kg_extraction_jobs where job_id in ({placeholders})", job_ids)
         conn.execute(
-            "delete from kg_extraction_jobs where job_id in (select job_id from kg_extraction_jobs_legacy)"
+            f"update preparation_jobs set status = 'failed', stage = 'failed' where job_id in ({placeholders})",
+            job_ids,
         )
-        conn.execute(
-            "update preparation_jobs set status = 'failed', stage = 'failed' "
-            "where job_id in (select job_id from kg_extraction_jobs_legacy)"
-        )
-        for table in legacy_tables:
-            conn.execute(f"drop table if exists {table}")
 
     # A node id was global in v3, so it can be copied into every known extraction
-    # job that references it. Any missing mapping would otherwise make
-    # insert-or-ignore silently omit part of a snapshot.
-    unassignable = conn.execute(
-        """with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
-            union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
-            union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
-        ), invalid as (
-            select 1 from kg_extraction_jobs_legacy jobs
-            left join preparation_jobs parents on parents.job_id = jobs.job_id
-            left join videos on videos.video_id = jobs.video_id
-            left join transcript_sources on transcript_sources.transcript_id = jobs.transcript_id
-            where parents.job_id is null or videos.video_id is null or transcript_sources.transcript_id is null
-            union all
-            select 1 from kg_node_sources_legacy sources
-            left join kg_extraction_jobs_legacy jobs on jobs.job_id = sources.extraction_job_id
-            left join kg_nodes_legacy nodes on nodes.node_id = sources.node_id
-            left join videos on videos.video_id = sources.video_id
-            left join transcript_sources on transcript_sources.transcript_id = sources.transcript_id
-            where sources.extraction_job_id is null or jobs.job_id is null or nodes.node_id is null
-                or (sources.video_id is not null and videos.video_id is null)
-                or (sources.transcript_id is not null and transcript_sources.transcript_id is null)
-            union all
-            select 1 from kg_edges_legacy edges
-            left join kg_extraction_jobs_legacy jobs on jobs.job_id = edges.extraction_job_id
-            left join kg_nodes_legacy source_nodes on source_nodes.node_id = edges.source_node_id
-            left join kg_nodes_legacy target_nodes on target_nodes.node_id = edges.target_node_id
-            left join kg_relation_types on kg_relation_types.relation_type = edges.relation_type
-            where edges.extraction_job_id is null or jobs.job_id is null
-                or source_nodes.node_id is null or target_nodes.node_id is null
-                or kg_relation_types.relation_type is null
-            union all
-            select 1 from kg_nodes_legacy nodes
-            where not exists (select 1 from node_jobs where node_jobs.node_id = nodes.node_id)
-            union all
-            select 1 from kg_node_embeddings_legacy ancillary
-            where not exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-            union all
-            select 1 from kg_node_detail_cache_legacy ancillary
-            where not exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-            union all
-            select 1 from kg_user_knowledge_legacy ancillary
-            where not exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-        ) select 1 from invalid limit 1"""
-    ).fetchone()
-    if unassignable is not None:
-        discard_legacy_batch()
-        return
+    # job that references it. A dangling reference or missing parent makes the
+    # *owning job* unmigratable - collect the specific job ids, not a yes/no flag.
+    bad_job_ids = [
+        row["job_id"] for row in conn.execute(
+            """
+            select distinct job_id from (
+                select jobs.job_id from kg_extraction_jobs_legacy jobs
+                left join preparation_jobs parents on parents.job_id = jobs.job_id
+                left join videos on videos.video_id = jobs.video_id
+                left join transcript_sources on transcript_sources.transcript_id = jobs.transcript_id
+                where parents.job_id is null or videos.video_id is null or transcript_sources.transcript_id is null
+                union all
+                select sources.extraction_job_id as job_id from kg_node_sources_legacy sources
+                left join kg_extraction_jobs_legacy jobs on jobs.job_id = sources.extraction_job_id
+                left join kg_nodes_legacy nodes on nodes.node_id = sources.node_id
+                left join videos on videos.video_id = sources.video_id
+                left join transcript_sources on transcript_sources.transcript_id = sources.transcript_id
+                where sources.extraction_job_id is null or jobs.job_id is null or nodes.node_id is null
+                    or (sources.video_id is not null and videos.video_id is null)
+                    or (sources.transcript_id is not null and transcript_sources.transcript_id is null)
+                union all
+                select edges.extraction_job_id as job_id from kg_edges_legacy edges
+                left join kg_extraction_jobs_legacy jobs on jobs.job_id = edges.extraction_job_id
+                left join kg_nodes_legacy source_nodes on source_nodes.node_id = edges.source_node_id
+                left join kg_nodes_legacy target_nodes on target_nodes.node_id = edges.target_node_id
+                left join kg_relation_types on kg_relation_types.relation_type = edges.relation_type
+                where edges.extraction_job_id is null or jobs.job_id is null
+                    or source_nodes.node_id is null or target_nodes.node_id is null
+                    or kg_relation_types.relation_type is null
+            ) where job_id is not null
+            """
+        ).fetchall()
+    ]
+    discard_jobs(bad_job_ids)
+    # Nodes/embeddings/detail-cache/user-knowledge with no surviving job reference at
+    # all (orphaned in v3, or only ever referenced by a now-discarded bad job) simply
+    # have nothing to attribute them to - the joins below already drop them silently.
 
-    # Every copy below is `insert or ignore`, so re-running after a prior partial
-    # copy (rebuild committed, but the process died before the drop-legacy-tables
-    # step) just skips rows already copied instead of failing on the primary key.
+    # Every copy below is `insert or ignore` and excludes _kg_migration_bad_jobs, so
+    # re-running after a prior partial copy (rebuild committed, but the process died
+    # before the drop-legacy-tables step) just skips rows already copied instead of
+    # failing on the primary key, and never re-admits a job just discarded above.
     conn.execute(
         """insert or ignore into kg_extraction_jobs
         (job_id, video_id, transcript_id, cache_key, status, stage, node_count, edge_count, error_code, message, created_at, updated_at)
         select job_id, video_id, transcript_id, cache_key, status, stage, node_count, edge_count, error_code, message, created_at, updated_at
-        from kg_extraction_jobs_legacy"""
+        from kg_extraction_jobs_legacy where job_id not in (select job_id from _kg_migration_bad_jobs)"""
     )
     conn.execute(
         """insert or ignore into kg_nodes
         (extraction_job_id, node_id, canonical_name, node_type, short_summary, detailed_explanation, detail_status,
          confidence, aliases, created_at, updated_at)
         with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
+            select node_id, extraction_job_id from kg_node_sources_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select source_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select target_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
         )
         select node_jobs.extraction_job_id, nodes.node_id, nodes.canonical_name, nodes.node_type, nodes.short_summary,
                nodes.detailed_explanation, nodes.detail_status, nodes.confidence, nodes.aliases,
@@ -278,7 +281,8 @@ def migrate_graph_snapshot_schema(conn):
                case when start_seconds is not null and end_seconds is not null and end_seconds < start_seconds
                     then start_seconds else end_seconds end,
                evidence_text, created_at
-        from kg_node_sources_legacy where extraction_job_id is not null"""
+        from kg_node_sources_legacy
+        where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)"""
     )
     conn.execute(
         """insert or ignore into kg_edges
@@ -286,16 +290,20 @@ def migrate_graph_snapshot_schema(conn):
          evidence_source_ids, directional, created_at, updated_at)
         select extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, relation_status, confidence,
                evidence_source_ids, directional, created_at, updated_at
-        from kg_edges_legacy where extraction_job_id is not null"""
+        from kg_edges_legacy
+        where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)"""
     )
     conn.execute(
         """insert or ignore into kg_node_embeddings (extraction_job_id, node_id, model, dims, vector, created_at)
         with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
+            select node_id, extraction_job_id from kg_node_sources_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select source_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select target_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
         )
         select node_jobs.extraction_job_id, embeddings.node_id, embeddings.model, embeddings.dims, embeddings.vector, embeddings.created_at
         from kg_node_embeddings_legacy embeddings join node_jobs on node_jobs.node_id = embeddings.node_id"""
@@ -305,11 +313,14 @@ def migrate_graph_snapshot_schema(conn):
         (extraction_job_id, node_id, cache_key, lens_hash, lens_json, provider, model, prompt_version, detail_markdown,
          evidence_json, confidence, status, created_at, updated_at)
         with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
+            select node_id, extraction_job_id from kg_node_sources_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select source_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select target_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
         )
         select node_jobs.extraction_job_id, cache.node_id, cache.cache_key, cache.lens_hash, cache.lens_json, cache.provider,
                cache.model, cache.prompt_version, cache.detail_markdown, cache.evidence_json, cache.confidence, cache.status,
@@ -319,11 +330,14 @@ def migrate_graph_snapshot_schema(conn):
     conn.execute(
         """insert or ignore into kg_user_knowledge (extraction_job_id, node_id, status, confidence, last_reviewed_at, notes, updated_at)
         with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
+            select node_id, extraction_job_id from kg_node_sources_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select source_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
             union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            select target_node_id, extraction_job_id from kg_edges_legacy
+                where extraction_job_id is not null and extraction_job_id not in (select job_id from _kg_migration_bad_jobs)
         )
         select node_jobs.extraction_job_id, knowledge.node_id, knowledge.status, knowledge.confidence, knowledge.last_reviewed_at,
                knowledge.notes, knowledge.updated_at
@@ -336,49 +350,55 @@ def migrate_graph_snapshot_schema(conn):
             edge_count = (select count(*) from kg_edges where extraction_job_id = kg_extraction_jobs.job_id)
         where job_id in (select job_id from kg_extraction_jobs_legacy)"""
     )
-    incomplete = conn.execute(
-        """with node_jobs as (
-            select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
-            union
-            select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
-            union
-            select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
-        ), expected as (
-            select jobs.job_id,
-                (select count(*) from node_jobs where extraction_job_id = jobs.job_id) as node_count,
-                (select count(*) from kg_node_sources_legacy where extraction_job_id = jobs.job_id) as source_count,
-                (select count(*) from kg_edges_legacy where extraction_job_id = jobs.job_id) as edge_count,
-                (select count(*) from kg_node_embeddings_legacy ancillary
-                 where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-                   and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
-                               and node_jobs.extraction_job_id = jobs.job_id)) as embedding_count,
-                (select count(*) from kg_node_detail_cache_legacy ancillary
-                 where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-                   and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
-                               and node_jobs.extraction_job_id = jobs.job_id)) as detail_count,
-                (select count(*) from kg_user_knowledge_legacy ancillary
-                 where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
-                   and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
-                               and node_jobs.extraction_job_id = jobs.job_id)) as knowledge_count
-            from kg_extraction_jobs_legacy jobs
-        )
-        select 1 from expected
-        left join kg_extraction_jobs active on active.job_id = expected.job_id
-        where active.job_id is null
-            or coalesce(active.node_count, -1) != expected.node_count
-            or coalesce(active.edge_count, -1) != expected.edge_count
-            or (select count(*) from kg_nodes where extraction_job_id = expected.job_id) != expected.node_count
-            or (select count(*) from kg_node_sources where extraction_job_id = expected.job_id) != expected.source_count
-            or (select count(*) from kg_edges where extraction_job_id = expected.job_id) != expected.edge_count
-            or (select count(*) from kg_node_embeddings where extraction_job_id = expected.job_id) != expected.embedding_count
-            or (select count(*) from kg_node_detail_cache where extraction_job_id = expected.job_id) != expected.detail_count
-            or (select count(*) from kg_user_knowledge where extraction_job_id = expected.job_id) != expected.knowledge_count
-        limit 1"""
-    ).fetchone()
-    if incomplete is not None:
-        discard_legacy_batch()
-        return
+    incomplete_job_ids = [
+        row["job_id"] for row in conn.execute(
+            """with node_jobs as (
+                select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
+                union
+                select source_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+                union
+                select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
+            ), expected as (
+                select jobs.job_id,
+                    (select count(*) from node_jobs where extraction_job_id = jobs.job_id) as node_count,
+                    (select count(*) from kg_node_sources_legacy where extraction_job_id = jobs.job_id) as source_count,
+                    (select count(*) from kg_edges_legacy where extraction_job_id = jobs.job_id) as edge_count,
+                    (select count(*) from kg_node_embeddings_legacy ancillary
+                     where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
+                       and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
+                                   and node_jobs.extraction_job_id = jobs.job_id)) as embedding_count,
+                    (select count(*) from kg_node_detail_cache_legacy ancillary
+                     where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
+                       and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
+                                   and node_jobs.extraction_job_id = jobs.job_id)) as detail_count,
+                    (select count(*) from kg_user_knowledge_legacy ancillary
+                     where exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id)
+                       and exists (select 1 from node_jobs where node_jobs.node_id = ancillary.node_id
+                                   and node_jobs.extraction_job_id = jobs.job_id)) as knowledge_count
+                from kg_extraction_jobs_legacy jobs
+                where jobs.job_id not in (select job_id from _kg_migration_bad_jobs)
+            )
+            select expected.job_id from expected
+            left join kg_extraction_jobs active on active.job_id = expected.job_id
+            where active.job_id is null
+                or coalesce(active.node_count, -1) != expected.node_count
+                or coalesce(active.edge_count, -1) != expected.edge_count
+                or (select count(*) from kg_nodes where extraction_job_id = expected.job_id) != expected.node_count
+                or (select count(*) from kg_node_sources where extraction_job_id = expected.job_id) != expected.source_count
+                or (select count(*) from kg_edges where extraction_job_id = expected.job_id) != expected.edge_count
+                or (select count(*) from kg_node_embeddings where extraction_job_id = expected.job_id) != expected.embedding_count
+                or (select count(*) from kg_node_detail_cache where extraction_job_id = expected.job_id) != expected.detail_count
+                or (select count(*) from kg_user_knowledge where extraction_job_id = expected.job_id) != expected.knowledge_count
+            """
+        ).fetchall()
+    ]
+    # A job that's still incomplete after a full, uninterrupted copy pass (as opposed
+    # to one merely resumed mid-way, which insert-or-ignore already handles above)
+    # signals a real mismatch for that job specifically - discard just that job and
+    # let every unrelated job in the same legacy batch finish migrating normally.
+    discard_jobs(incomplete_job_ids)
 
+    conn.execute("drop table if exists _kg_migration_bad_jobs")
     for table in legacy_tables:
         conn.execute(f"drop table if exists {table}")
 
