@@ -1,4 +1,4 @@
-from db import short_hash_id
+import hashlib
 
 
 KEYWORDS = (
@@ -9,11 +9,15 @@ KEYWORDS = (
 
 
 def node_id_for(video_id, canonical_name):
-    return short_hash_id("node", video_id, canonical_name.lower())
+    digest = hashlib.sha256(f"{video_id}:{canonical_name.lower()}".encode()).hexdigest()
+    return f"node-{digest[:12]}"
 
 
 def edge_id_for(source_node_id, target_node_id, relation_type):
-    return short_hash_id("edge", source_node_id, target_node_id, relation_type)
+    if relation_type == "related_to":
+        source_node_id, target_node_id = sorted((source_node_id, target_node_id))
+    digest = hashlib.sha256(f"{source_node_id}:{target_node_id}:{relation_type}".encode()).hexdigest()
+    return f"edge-{digest[:12]}"
 
 
 def heuristic_window_candidates(video_id, window):
@@ -65,12 +69,14 @@ def heuristic_extract_graph(video_id, windows):
         for previous, current in zip(window_candidates, window_candidates[1:]):
             if previous["node_id"] == current["node_id"]:
                 continue
-            edge_id = edge_id_for(previous["node_id"], current["node_id"], "related_to")
+            source_node_id, target_node_id = sorted((previous["node_id"], current["node_id"]))
+            edge_id = edge_id_for(source_node_id, target_node_id, "related_to")
             edges_by_key[edge_id] = {
                 "edge_id": edge_id,
-                "source_node_id": previous["node_id"],
-                "target_node_id": current["node_id"],
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
                 "relation_type": "related_to",
+                "directional": 0,
                 "confidence": 0.5,
                 "evidence_source_ids": [],
             }

@@ -17,6 +17,7 @@ GRAPH_WINDOW_SECONDS = 75
 
 
 def run_graph_extraction_for_transcript(video_id, transcript_id, job_id, force_refresh=False):
+    cache_key = None
     try:
         transcript = load_transcript(transcript_id)
         if not transcript:
@@ -25,11 +26,7 @@ def run_graph_extraction_for_transcript(video_id, transcript_id, job_id, force_r
         cache_key = graph_extraction_cache_key(video_id, content_hash)
         existing = latest_ready_extraction_by_cache_key(cache_key)
         if existing and not force_refresh:
-            upsert_extraction_job(
-                job_id, video_id, transcript_id, cache_key,
-                status="ready", stage="ready", node_count=existing["node_count"], edge_count=existing["edge_count"],
-            )
-            clone_graph_snapshot(existing["job_id"], job_id)
+            clone_graph_snapshot(existing["job_id"], job_id, video_id, transcript_id, cache_key)
             return extraction_job_payload(job_id)
 
         upsert_extraction_job(job_id, video_id, transcript_id, cache_key, status="processing", stage="extracting_graph")
@@ -40,11 +37,14 @@ def run_graph_extraction_for_transcript(video_id, transcript_id, job_id, force_r
         update_extraction_job(job_id, status="ready", stage="ready", node_count=len(nodes), edge_count=len(edges), error_code=None, message=None)
         return extraction_job_payload(job_id)
     except Exception as error:
-        update_extraction_job(
-            job_id,
-            status="failed",
-            stage="failed",
-            error_code="GRAPH_EXTRACTION_FAILED",
-            message=redact_secret_text(str(error)),
-        )
+        values = {
+            "status": "failed",
+            "stage": "failed",
+            "error_code": "GRAPH_EXTRACTION_FAILED",
+            "message": redact_secret_text(str(error)),
+        }
+        if cache_key is None:
+            update_extraction_job(job_id, **values)
+        else:
+            upsert_extraction_job(job_id, video_id, transcript_id, cache_key, **values)
         raise

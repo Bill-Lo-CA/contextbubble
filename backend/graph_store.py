@@ -1,7 +1,7 @@
 import json
 
 from config import GRAPH_VERSION, now_iso
-from db import connect_db, update_allowed_columns
+from db import connect_db
 
 
 def graph_extraction_cache_key(video_id, content_hash):
@@ -37,30 +37,63 @@ EXTRACTION_JOB_UPDATE_COLUMNS = {"status", "stage", "node_count", "edge_count", 
 
 
 def update_extraction_job(job_id, **values):
-    update_allowed_columns("kg_extraction_jobs", "job_id", job_id, EXTRACTION_JOB_UPDATE_COLUMNS, **values)
+    if not values:
+        return
+    unknown = set(values) - EXTRACTION_JOB_UPDATE_COLUMNS
+    if unknown:
+        raise ValueError(f"invalid kg extraction job update fields: {', '.join(sorted(unknown))}")
+    values["updated_at"] = now_iso()
+    assignments = ", ".join(f"{key} = ?" for key in values)
+    with connect_db() as conn:
+        conn.execute("update kg_extraction_jobs set " + assignments + " where job_id = ?", (*values.values(), job_id))
 
 
 def extraction_job_payload(job_id):
     with connect_db() as conn:
         row = conn.execute(
-            """select preparation_jobs.job_id, preparation_jobs.video_id, preparation_jobs.status as job_status,
-                      kg_extraction_jobs.status as extraction_status, kg_extraction_jobs.stage, kg_extraction_jobs.node_count,
-                      kg_extraction_jobs.edge_count, kg_extraction_jobs.error_code, kg_extraction_jobs.message
+            """select preparation_jobs.job_id, preparation_jobs.video_id,
+                      preparation_jobs.status as parent_status, preparation_jobs.stage as parent_stage,
+                      preparation_jobs.error_code as parent_error_code, preparation_jobs.message as parent_message,
+                      kg_extraction_jobs.status as extraction_status, kg_extraction_jobs.stage as extraction_stage,
+                      kg_extraction_jobs.node_count, kg_extraction_jobs.edge_count,
+                      kg_extraction_jobs.error_code as extraction_error_code, kg_extraction_jobs.message as extraction_message
                from preparation_jobs left join kg_extraction_jobs on kg_extraction_jobs.job_id = preparation_jobs.job_id
                where preparation_jobs.job_id = ? and preparation_jobs.job_kind = 'graph_extraction'""",
             (job_id,),
         ).fetchone()
     if not row:
         return None
+    if row["parent_status"] == "failed":
+        status = "failed"
+        stage = row["parent_stage"]
+        if stage is None:
+            stage = "failed"
+        error_code = row["parent_error_code"]
+        message = row["parent_message"]
+    else:
+        status = row["extraction_status"]
+        if status is None:
+            status = row["parent_status"]
+        stage = row["extraction_stage"]
+        if stage is None:
+            stage = row["parent_stage"]
+        if stage is None:
+            stage = "queued"
+        error_code = row["extraction_error_code"]
+        if error_code is None:
+            error_code = row["parent_error_code"]
+        message = row["extraction_message"]
+        if message is None:
+            message = row["parent_message"]
     return {
         "job_id": row["job_id"],
         "video_id": row["video_id"],
-        "status": row["extraction_status"] or row["job_status"],
-        "stage": row["stage"] or "queued",
+        "status": status,
+        "stage": stage,
         "node_count": row["node_count"] or 0,
         "edge_count": row["edge_count"] or 0,
-        "error_code": row["error_code"],
-        "message": row["message"],
+        "error_code": error_code,
+        "message": message,
     }
 
 
@@ -102,24 +135,45 @@ def save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges):
         )
         conn.executemany(
             """insert into kg_edges
-            (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, evidence_source_ids, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, evidence_source_ids, directional, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(extraction_job_id, source_node_id, target_node_id, relation_type) do update set
-                confidence = excluded.confidence, evidence_source_ids = excluded.evidence_source_ids, updated_at = excluded.updated_at""",
+                confidence = excluded.confidence, evidence_source_ids = excluded.evidence_source_ids,
+                directional = excluded.directional, updated_at = excluded.updated_at""",
             [
                 (
                     job_id, edge["edge_id"], edge["source_node_id"], edge["target_node_id"], edge["relation_type"],
-                    edge["confidence"], json.dumps(edge.get("evidence_source_ids", [])), timestamp, timestamp,
+                    edge["confidence"], json.dumps(edge.get("evidence_source_ids", [])), edge.get("directional", 1), timestamp, timestamp,
                 )
                 for edge in edges
             ],
         )
 
 
-def clone_graph_snapshot(source_job_id, target_job_id):
-    if source_job_id == target_job_id:
-        return
+def clone_graph_snapshot(source_job_id, target_job_id, video_id, transcript_id, cache_key):
     with connect_db() as conn:
+        conn.execute("begin")
+        source = conn.execute(
+            "select node_count, edge_count from kg_extraction_jobs where job_id = ?",
+            (source_job_id,),
+        ).fetchone()
+        if not source:
+            raise ValueError("source extraction job not found")
+        timestamp = now_iso()
+        conn.execute(
+            """insert into kg_extraction_jobs
+            (job_id, video_id, transcript_id, cache_key, status, stage, node_count, edge_count, error_code, message, created_at, updated_at)
+            values (?, ?, ?, ?, 'ready', 'ready', ?, ?, null, null, ?, ?)
+            on conflict(job_id) do update set
+                video_id = excluded.video_id, transcript_id = excluded.transcript_id,
+                cache_key = excluded.cache_key, status = 'ready', stage = 'ready',
+                node_count = excluded.node_count, edge_count = excluded.edge_count,
+                error_code = null, message = null, updated_at = excluded.updated_at""",
+            (target_job_id, video_id, transcript_id, cache_key,
+             source["node_count"] or 0, source["edge_count"] or 0, timestamp, timestamp),
+        )
+        if source_job_id == target_job_id:
+            return
         conn.execute("delete from kg_nodes where extraction_job_id = ?", (target_job_id,))
         conn.execute(
             """insert into kg_nodes
