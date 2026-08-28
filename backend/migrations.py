@@ -31,7 +31,6 @@ GRAPH_TABLES_SQL = """
         detailed_explanation text,
         detail_status text not null default 'pending' check (detail_status in ('pending','generating','ready','failed')),
         confidence real not null check (confidence between 0 and 1),
-        knowledge_status text not null default 'unknown' check (knowledge_status in ('unknown','introduced','understood','mastered')),
         aliases text not null default '[]',
         created_at text not null, updated_at text not null,
         primary key (extraction_job_id, node_id)
@@ -79,6 +78,12 @@ GRAPH_TABLES_SQL = """
         foreign key (extraction_job_id, target_node_id) references kg_nodes(extraction_job_id, node_id) on delete cascade
     );
     create unique index if not exists idx_kg_edges_unique on kg_edges(extraction_job_id, source_node_id, target_node_id, relation_type);
+    -- directional=1 edges are order-sensitive ("A prerequisite_for B" != "B prerequisite_for A") and are
+    -- covered by idx_kg_edges_unique above; directional=0 edges represent a symmetric relationship, so
+    -- (A,B,type) and (B,A,type) must not both be insertable - normalize the pair order in this index.
+    create unique index if not exists idx_kg_edges_undirected_unique
+        on kg_edges(extraction_job_id, relation_type, min(source_node_id, target_node_id), max(source_node_id, target_node_id))
+        where directional = 0;
     create index if not exists idx_kg_edges_source on kg_edges(extraction_job_id, source_node_id, relation_status);
     create index if not exists idx_kg_edges_target on kg_edges(extraction_job_id, target_node_id, relation_status);
 
@@ -119,41 +124,71 @@ GRAPH_TABLES_SQL = """
 """
 
 
+def migrate_add_job_kind_and_graph_tables(conn):
+    # Guard the ALTER so an interrupted-then-retried migration (process killed after
+    # this statement but before the migration is recorded in schema_migrations) sees
+    # the column already present instead of failing with "duplicate column name".
+    # GRAPH_TABLES_SQL is entirely `if not exists` DDL, so it's already retry-safe.
+    columns = {row[1] for row in conn.execute("pragma table_info(preparation_jobs)")}
+    if "job_kind" not in columns:
+        conn.execute(
+            "alter table preparation_jobs add column job_kind text not null default 'bubble_analysis' "
+            "check (job_kind in ('bubble_analysis','graph_extraction'))"
+        )
+    conn.executescript(GRAPH_TABLES_SQL)
+
+
 def migrate_graph_snapshot_schema(conn):
+    # conn.executescript() implicitly commits any pending transaction before running,
+    # which breaks atomicity with the surrounding migration transaction: if this
+    # function is interrupted after the executescript() below but before the copy+drop
+    # steps finish, the rename+rebuild is already durable on disk even though the
+    # migration was never recorded as applied. So "already fully migrated" and
+    # "partially migrated, resume the copy" have to be distinguished and both handled -
+    # see rebuild_done/legacy_present below - rather than a single early-return check.
     node_columns = {row[1] for row in conn.execute("pragma table_info(kg_nodes)")}
-    if "extraction_job_id" in node_columns:
+    rebuild_done = "extraction_job_id" in node_columns
+    legacy_present = conn.execute(
+        "select 1 from sqlite_master where type = 'table' and name = 'kg_nodes_legacy'"
+    ).fetchone() is not None
+    if rebuild_done and not legacy_present:
         return
 
-    for table in (
-        "kg_extraction_events", "kg_node_sources", "kg_edges", "kg_node_embeddings",
-        "kg_node_detail_cache", "kg_user_knowledge",
-    ):
-        conn.execute(f"alter table {table} rename to {table}_legacy")
-    conn.execute("alter table kg_nodes rename to kg_nodes_legacy")
-    conn.execute("alter table kg_extraction_jobs rename to kg_extraction_jobs_legacy")
+    if not legacy_present:
+        for table in (
+            "kg_extraction_events", "kg_node_sources", "kg_edges", "kg_node_embeddings",
+            "kg_node_detail_cache", "kg_user_knowledge",
+        ):
+            conn.execute(f"alter table {table} rename to {table}_legacy")
+        conn.execute("alter table kg_nodes rename to kg_nodes_legacy")
+        conn.execute("alter table kg_extraction_jobs rename to kg_extraction_jobs_legacy")
 
-    for index in (
-        "idx_kg_extraction_jobs_lookup", "idx_kg_extraction_jobs_cache_key", "idx_kg_extraction_events_job",
-        "idx_kg_nodes_name", "idx_kg_nodes_type", "idx_kg_node_sources_video", "idx_kg_edges_unique",
-        "idx_kg_edges_source", "idx_kg_edges_target", "idx_kg_node_detail_cache_node",
-    ):
-        conn.execute(f"drop index if exists {index}")
+        for index in (
+            "idx_kg_extraction_jobs_lookup", "idx_kg_extraction_jobs_cache_key", "idx_kg_extraction_events_job",
+            "idx_kg_nodes_name", "idx_kg_nodes_type", "idx_kg_node_sources_video", "idx_kg_edges_unique",
+            "idx_kg_edges_undirected_unique", "idx_kg_edges_source", "idx_kg_edges_target", "idx_kg_node_detail_cache_node",
+        ):
+            conn.execute(f"drop index if exists {index}")
 
-    conn.executescript(GRAPH_TABLES_SQL)
+        conn.executescript(GRAPH_TABLES_SQL)
+
+    # Every copy below is `insert or ignore`, so re-running after a prior partial
+    # copy (rebuild committed, but the process died before the drop-legacy-tables
+    # step) just skips rows already copied instead of failing on the primary key.
     conn.execute(
-        """insert into kg_extraction_jobs
+        """insert or ignore into kg_extraction_jobs
         (job_id, video_id, transcript_id, cache_key, status, stage, node_count, edge_count, error_code, message, created_at, updated_at)
         select job_id, video_id, transcript_id, cache_key, status, stage, node_count, edge_count, error_code, message, created_at, updated_at
         from kg_extraction_jobs_legacy"""
     )
     conn.execute(
-        """insert into kg_extraction_events (event_id, job_id, event_type, stage, metadata, created_at)
+        """insert or ignore into kg_extraction_events (event_id, job_id, event_type, stage, metadata, created_at)
         select event_id, job_id, event_type, stage, metadata, created_at from kg_extraction_events_legacy"""
     )
     conn.execute(
-        """insert into kg_nodes
+        """insert or ignore into kg_nodes
         (extraction_job_id, node_id, canonical_name, node_type, short_summary, detailed_explanation, detail_status,
-         confidence, knowledge_status, aliases, created_at, updated_at)
+         confidence, aliases, created_at, updated_at)
         with node_jobs as (
             select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
             union
@@ -162,18 +197,27 @@ def migrate_graph_snapshot_schema(conn):
             select target_node_id, extraction_job_id from kg_edges_legacy where extraction_job_id is not null
         )
         select node_jobs.extraction_job_id, nodes.node_id, nodes.canonical_name, nodes.node_type, nodes.short_summary,
-               nodes.detailed_explanation, nodes.detail_status, nodes.confidence, nodes.knowledge_status, nodes.aliases,
+               nodes.detailed_explanation, nodes.detail_status, nodes.confidence, nodes.aliases,
                nodes.created_at, nodes.updated_at
         from kg_nodes_legacy nodes join node_jobs on node_jobs.node_id = nodes.node_id"""
     )
     conn.execute(
-        """insert into kg_node_sources
+        # The v3 kg_node_sources had no start/end ordering check, so a historical row
+        # could have end_seconds < start_seconds; the v4 table enforces one. Swap
+        # the pair back into order (only when both are present and reversed) instead
+        # of letting the insert fail and strand the row in _legacy indefinitely.
+        """insert or ignore into kg_node_sources
         (extraction_job_id, node_id, source_id, video_id, transcript_id, segment_ids, start_seconds, end_seconds, evidence_text, created_at)
-        select extraction_job_id, node_id, source_id, video_id, transcript_id, segment_ids, start_seconds, end_seconds, evidence_text, created_at
+        select extraction_job_id, node_id, source_id, video_id, transcript_id, segment_ids,
+               case when start_seconds is not null and end_seconds is not null and end_seconds < start_seconds
+                    then end_seconds else start_seconds end,
+               case when start_seconds is not null and end_seconds is not null and end_seconds < start_seconds
+                    then start_seconds else end_seconds end,
+               evidence_text, created_at
         from kg_node_sources_legacy where extraction_job_id is not null"""
     )
     conn.execute(
-        """insert into kg_edges
+        """insert or ignore into kg_edges
         (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, relation_status, confidence,
          evidence_source_ids, directional, created_at, updated_at)
         select extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, relation_status, confidence,
@@ -181,7 +225,7 @@ def migrate_graph_snapshot_schema(conn):
         from kg_edges_legacy where extraction_job_id is not null"""
     )
     conn.execute(
-        """insert into kg_node_embeddings (extraction_job_id, node_id, model, dims, vector, created_at)
+        """insert or ignore into kg_node_embeddings (extraction_job_id, node_id, model, dims, vector, created_at)
         with node_jobs as (
             select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
             union
@@ -193,7 +237,7 @@ def migrate_graph_snapshot_schema(conn):
         from kg_node_embeddings_legacy embeddings join node_jobs on node_jobs.node_id = embeddings.node_id"""
     )
     conn.execute(
-        """insert into kg_node_detail_cache
+        """insert or ignore into kg_node_detail_cache
         (extraction_job_id, node_id, cache_key, lens_hash, lens_json, provider, model, prompt_version, detail_markdown,
          evidence_json, confidence, status, created_at, updated_at)
         with node_jobs as (
@@ -209,7 +253,7 @@ def migrate_graph_snapshot_schema(conn):
         from kg_node_detail_cache_legacy cache join node_jobs on node_jobs.node_id = cache.node_id"""
     )
     conn.execute(
-        """insert into kg_user_knowledge (extraction_job_id, node_id, status, confidence, last_reviewed_at, notes, updated_at)
+        """insert or ignore into kg_user_knowledge (extraction_job_id, node_id, status, confidence, last_reviewed_at, notes, updated_at)
         with node_jobs as (
             select node_id, extraction_job_id from kg_node_sources_legacy where extraction_job_id is not null
             union
@@ -322,11 +366,7 @@ MIGRATIONS = (
         create index if not exists idx_translation_jobs_status on translation_jobs(status, created_at);
         create index if not exists idx_translation_jobs_key on translation_jobs(job_key, status, created_at);
     """),
-    (3, "knowledge_graph_extraction", f"""
-        alter table preparation_jobs add column job_kind text not null default 'bubble_analysis'
-            check (job_kind in ('bubble_analysis','graph_extraction'));
-        {GRAPH_TABLES_SQL}
-    """),
+    (3, "knowledge_graph_extraction", migrate_add_job_kind_and_graph_tables),
     (4, "knowledge_graph_job_snapshots", migrate_graph_snapshot_schema),
 )
 

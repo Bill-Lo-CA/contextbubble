@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import config
 from db import connect_db, init_db
+from migrations import migrate_add_job_kind_and_graph_tables, migrate_graph_snapshot_schema
 
 
 class MigrationTests(unittest.TestCase):
@@ -54,6 +55,212 @@ class MigrationTests(unittest.TestCase):
                     (job_id,),
                 )
             self.assertEqual(conn.execute("select count(*) from kg_extraction_jobs where cache_key = 'same-cache'").fetchone()[0], 2)
+
+    def test_undirected_edges_reject_the_reverse_pair_but_directed_edges_allow_it(self):
+        init_db()
+        with connect_db() as conn:
+            conn.execute("insert into videos values ('video-edges', 'now', 'now')")
+            conn.execute(
+                "insert into preparation_jobs (job_id, video_id, learner_level, status, stage, job_kind, created_at, updated_at) "
+                "values ('job-edges', 'video-edges', 'intermediate', 'ready', 'ready', 'graph_extraction', 'now', 'now')"
+            )
+            conn.execute("insert into transcript_sources values ('transcript-x', 'video-edges', 'x', 'test', 'hash', 0, '{}', 'now')")
+            conn.execute(
+                "insert into kg_extraction_jobs (job_id, video_id, transcript_id, cache_key, status, stage, created_at, updated_at) "
+                "values ('job-edges', 'video-edges', 'transcript-x', 'k', 'ready', 'ready', 'now', 'now')"
+            )
+            conn.execute("insert into kg_relation_types (relation_type, description, created_at) values ('related_to', 'r', 'now')")
+            conn.execute("insert into kg_relation_types (relation_type, description, created_at) values ('causes', 'r', 'now')")
+            for node_id in ("node-a", "node-b"):
+                conn.execute(
+                    "insert into kg_nodes (extraction_job_id, node_id, canonical_name, node_type, short_summary, confidence, created_at, updated_at) "
+                    "values ('job-edges', ?, ?, 'concept', 's', 0.5, 'now', 'now')",
+                    (node_id, node_id),
+                )
+            conn.execute(
+                "insert into kg_edges (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, directional, created_at, updated_at) "
+                "values ('job-edges', 'edge-ab', 'node-a', 'node-b', 'related_to', 0.5, 0, 'now', 'now')"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "insert into kg_edges (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, directional, created_at, updated_at) "
+                    "values ('job-edges', 'edge-ba', 'node-b', 'node-a', 'related_to', 0.5, 0, 'now', 'now')"
+                )
+            # A directed pair in the reverse order is a structurally different edge and must be allowed
+            # (uses a different relation_type so it doesn't collide with edge-ab's own unique-index entry).
+            conn.execute(
+                "insert into kg_edges (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, directional, created_at, updated_at) "
+                "values ('job-edges', 'edge-ab-directed', 'node-a', 'node-b', 'causes', 0.5, 1, 'now', 'now')"
+            )
+            conn.execute(
+                "insert into kg_edges (extraction_job_id, edge_id, source_node_id, target_node_id, relation_type, confidence, directional, created_at, updated_at) "
+                "values ('job-edges', 'edge-ba-directed', 'node-b', 'node-a', 'causes', 0.5, 1, 'now', 'now')"
+            )
+
+    def test_job_kind_migration_is_retryable_after_a_partial_alter(self):
+        with connect_db() as conn:
+            conn.executescript("""
+                create table preparation_jobs (
+                    job_id text primary key, video_id text not null, learner_level text not null,
+                    source_policy text not null default 'live', status text not null, stage text not null,
+                    created_at text not null, updated_at text not null
+                );
+            """)
+            # Simulate a process that was killed after the ALTER TABLE committed but
+            # before schema_migrations recorded version 3 - the column already exists.
+            conn.execute(
+                "alter table preparation_jobs add column job_kind text not null default 'bubble_analysis' "
+                "check (job_kind in ('bubble_analysis','graph_extraction'))"
+            )
+            migrate_add_job_kind_and_graph_tables(conn)  # must not raise "duplicate column name"
+            columns = [row[1] for row in conn.execute("pragma table_info(preparation_jobs)")]
+            self.assertEqual(columns.count("job_kind"), 1)
+
+    def test_snapshot_migration_resumes_after_interruption_and_normalizes_bad_timestamps(self):
+        with connect_db() as conn:
+            conn.executescript("""
+                create table videos (video_id text primary key, created_at text not null, updated_at text not null);
+                create table preparation_jobs (
+                    job_id text primary key, video_id text not null, learner_level text not null,
+                    status text not null, stage text not null, created_at text not null, updated_at text not null,
+                    job_kind text not null default 'bubble_analysis'
+                );
+                create table transcript_sources (
+                    transcript_id text primary key, video_id text not null, filename text not null, source text not null,
+                    content_hash text not null, segment_count integer not null, metadata text default '{}', created_at text not null
+                );
+                create table kg_extraction_jobs (
+                    job_id text primary key, video_id text not null, transcript_id text not null,
+                    cache_key text not null, status text not null, stage text not null,
+                    node_count integer default 0, edge_count integer default 0, error_code text, message text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_extraction_events (
+                    event_id integer primary key autoincrement, job_id text not null, event_type text not null,
+                    stage text, metadata text, created_at text not null
+                );
+                create table kg_nodes (
+                    node_id text primary key, canonical_name text not null, node_type text not null,
+                    short_summary text not null, detailed_explanation text, detail_status text not null default 'pending',
+                    confidence real not null, aliases text not null default '[]', created_at text not null, updated_at text not null
+                );
+                create table kg_node_sources (
+                    node_id text not null, source_id text not null, video_id text, transcript_id text,
+                    segment_ids text not null default '[]', start_seconds real, end_seconds real,
+                    extraction_job_id text, evidence_text text, created_at text not null,
+                    primary key (node_id, source_id)
+                );
+                create table kg_relation_types (
+                    relation_type text primary key, description text not null,
+                    status text not null default 'approved', proposed_by_job_id text, created_at text not null
+                );
+                create table kg_edges (
+                    edge_id text primary key, source_node_id text not null, target_node_id text not null,
+                    relation_type text not null, relation_status text not null default 'accepted',
+                    confidence real not null, evidence_source_ids text not null default '[]',
+                    directional integer not null default 1, extraction_job_id text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_node_embeddings (
+                    node_id text primary key, model text not null, dims integer not null, vector text not null, created_at text not null
+                );
+                create table kg_node_detail_cache (
+                    cache_key text primary key, node_id text not null, lens_hash text not null, lens_json text not null,
+                    provider text not null, model text not null, prompt_version text not null,
+                    detail_markdown text, evidence_json text not null default '[]', confidence real,
+                    status text not null, created_at text not null, updated_at text not null
+                );
+                create table kg_user_knowledge (
+                    node_id text primary key, status text not null default 'unknown',
+                    confidence real, last_reviewed_at text, notes text, updated_at text not null
+                );
+                insert into videos values ('video-resume', 'now', 'now');
+                insert into transcript_sources values ('transcript-resume', 'video-resume', 'x', 'test', 'hash', 1, '{}', 'now');
+                insert into preparation_jobs values ('job-resume', 'video-resume', 'intermediate', 'ready', 'ready', 'now', 'now', 'graph_extraction');
+                insert into kg_extraction_jobs values ('job-resume', 'video-resume', 'transcript-resume', 'k', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
+                insert into kg_nodes values ('node-resume', 'embedding', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                -- end_seconds < start_seconds: valid under the old (unchecked) schema, invalid under the new one.
+                insert into kg_node_sources values ('node-resume', 'segment-001', 'video-resume', 'transcript-resume', '[]', 10, 5, 'job-resume', 'evidence', 'now');
+            """)
+            # First call: a full rename+rebuild+copy+drop. Also verifies Codex's P1
+            # finding - the legacy row above has end_seconds(5) < start_seconds(10),
+            # which the new schema's check constraint would reject unless normalized.
+            migrate_graph_snapshot_schema(conn)
+            row = conn.execute(
+                "select start_seconds, end_seconds from kg_node_sources where extraction_job_id = 'job-resume'"
+            ).fetchone()
+            self.assertEqual((row["start_seconds"], row["end_seconds"]), (5, 10))
+            self.assertEqual(
+                conn.execute("select 1 from sqlite_master where type = 'table' and name = 'kg_nodes_legacy'").fetchone(),
+                None,
+            )
+
+        # Second call: simulate a process that was killed after the rebuild committed
+        # (executescript()'s implicit commit) but before the copy+drop finished, by
+        # manually recreating a lingering _legacy table with data that was never copied.
+        with connect_db() as conn:
+            conn.execute(
+                "insert into preparation_jobs values ('job-resume-2', 'video-resume', 'intermediate', 'ready', 'ready', 'now', 'now', 'graph_extraction')"
+            )
+            conn.executescript("""
+                create table kg_node_sources_legacy (
+                    node_id text not null, source_id text not null, video_id text, transcript_id text,
+                    segment_ids text not null default '[]', start_seconds real, end_seconds real,
+                    extraction_job_id text, evidence_text text, created_at text not null,
+                    primary key (node_id, source_id)
+                );
+                create table kg_extraction_jobs_legacy (
+                    job_id text primary key, video_id text not null, transcript_id text not null,
+                    cache_key text not null, status text not null, stage text not null,
+                    node_count integer default 0, edge_count integer default 0, error_code text, message text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_extraction_events_legacy (
+                    event_id integer primary key, job_id text not null, event_type text not null,
+                    stage text, metadata text, created_at text not null
+                );
+                create table kg_edges_legacy (
+                    edge_id text primary key, source_node_id text not null, target_node_id text not null,
+                    relation_type text not null, relation_status text not null default 'accepted',
+                    confidence real not null, evidence_source_ids text not null default '[]',
+                    directional integer not null default 1, extraction_job_id text,
+                    created_at text not null, updated_at text not null
+                );
+                create table kg_nodes_legacy (
+                    node_id text primary key, canonical_name text not null, node_type text not null,
+                    short_summary text not null, detailed_explanation text, detail_status text not null default 'pending',
+                    confidence real not null, aliases text not null default '[]', created_at text not null, updated_at text not null
+                );
+                create table kg_node_embeddings_legacy (
+                    node_id text primary key, model text not null, dims integer not null, vector text not null, created_at text not null
+                );
+                create table kg_node_detail_cache_legacy (
+                    cache_key text primary key, node_id text not null, lens_hash text not null, lens_json text not null,
+                    provider text not null, model text not null, prompt_version text not null,
+                    detail_markdown text, evidence_json text not null default '[]', confidence real,
+                    status text not null, created_at text not null, updated_at text not null
+                );
+                create table kg_user_knowledge_legacy (
+                    node_id text primary key, status text not null default 'unknown',
+                    confidence real, last_reviewed_at text, notes text, updated_at text not null
+                );
+                insert into kg_extraction_jobs_legacy values ('job-resume-2', 'video-resume', 'transcript-resume', 'k2', 'ready', 'ready', 1, 0, null, null, 'now', 'now');
+                insert into kg_nodes_legacy values ('node-resume', 'embedding', 'concept', 'summary', null, 'pending', 0.6, '[]', 'now', 'now');
+                insert into kg_node_sources_legacy values ('node-resume', 'segment-001', 'video-resume', 'transcript-resume', '[]', 10, 5, 'job-resume-2', 'evidence', 'now');
+            """)
+            # kg_nodes already has extraction_job_id (rebuilt above) but _legacy tables
+            # linger, mimicking an interruption between the rebuild and the copy+drop.
+            migrate_graph_snapshot_schema(conn)
+            row = conn.execute(
+                "select start_seconds, end_seconds from kg_node_sources where extraction_job_id = 'job-resume-2'"
+            ).fetchone()
+            self.assertEqual((row["start_seconds"], row["end_seconds"]), (5, 10))
+            self.assertEqual(
+                conn.execute("select 1 from sqlite_master where type = 'table' and name = 'kg_node_sources_legacy'").fetchone(),
+                None,
+            )
+            # Calling it again once fully migrated must be a no-op, not an error.
+            migrate_graph_snapshot_schema(conn)
 
     def test_existing_v3_graph_schema_is_upgraded_without_losing_graph_rows(self):
         with connect_db() as conn:
