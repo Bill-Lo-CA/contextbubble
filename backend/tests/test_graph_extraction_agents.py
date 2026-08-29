@@ -84,9 +84,12 @@ class ValidNodeCandidateTests(unittest.TestCase):
             "unknown node_type": self.base_candidate(node_type="not-a-type"),
             "confidence too high": self.base_candidate(confidence=1.5),
             "confidence too low": self.base_candidate(confidence=-0.1),
+            "boolean confidence": self.base_candidate(confidence=True),
             "empty canonical_name": self.base_candidate(canonical_name="   "),
             "name too many words": self.base_candidate(canonical_name="a b c d e f g"),
+            "name too many characters": self.base_candidate(canonical_name="x" * (graph_extraction_agents.MAX_CANONICAL_NAME_CHARS + 1)),
             "summary too long": self.base_candidate(short_summary=" ".join(["word"] * 41)),
+            "summary too many characters": self.base_candidate(short_summary="x" * (graph_extraction_agents.MAX_NODE_SUMMARY_CHARS + 1)),
             "not a dict": "not a dict",
         }
         for label, candidate in cases.items():
@@ -98,6 +101,7 @@ class ResolveRelationTypeTests(unittest.TestCase):
     def test_cases(self):
         cases = {
             "fixed vocabulary": ("causes", ("causes", "accepted")),
+            "redundantly proposed fixed vocabulary": ("propose:causes", ("causes", "accepted")),
             "valid propose slug": ("propose:influences", ("influences", "proposed")),
             "propose uppercase rejected": ("propose:Influences", None),
             "propose missing colon": ("proposeinfluences", None),
@@ -261,6 +265,13 @@ class LlmRelationAgentValidationTests(unittest.TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0]["relation_status"], "proposed")
         self.assertEqual(edges[0]["relation_type"], "influences")
+
+    def test_proposed_description_over_character_limit_is_dropped(self):
+        description = "x" * (graph_extraction_agents.MAX_PROPOSED_RELATION_DESCRIPTION_CHARS + 1)
+        self.assertEqual(self.run_with(self.relation(relation_type="propose:influences", proposed_relation_description=description)), [])
+
+    def test_boolean_confidence_is_dropped(self):
+        self.assertEqual(self.run_with(self.relation(confidence=True)), [])
 
 
 class ExtractGraphForVideoTests(unittest.TestCase):

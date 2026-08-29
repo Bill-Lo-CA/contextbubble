@@ -23,6 +23,7 @@ def run_graph_extraction(job_id, video_id, learner_level, transcript, force_refr
 
 
 def run_preparation_job(job_id):
+    failure_error_code = "PREPARATION_FAILED"
     try:
         with connect_db() as conn:
             job = conn.execute("select * from preparation_jobs where job_id = ?", (job_id,)).fetchone()
@@ -54,6 +55,7 @@ def run_preparation_job(job_id):
         if job_kind == "bubble_analysis":
             run_bubble_analysis(job_id, video_id, learner_level, transcript, force_refresh)
         else:
+            failure_error_code = "GRAPH_EXTRACTION_FAILED"
             run_graph_extraction(job_id, video_id, learner_level, transcript, force_refresh)
         add_preparation_event(job_id, "job_ready", "ready")
     except FileNotFoundError as error:
@@ -64,7 +66,7 @@ def run_preparation_job(job_id):
         update_job(job_id, status="failed", stage="failed", error_code=error.error_code, message=command_error(prefix, error))
         add_preparation_event(job_id, "job_failed", "failed", {"error_code": error.error_code})
     except Exception as error:
-        update_job(job_id, status="failed", stage="failed", error_code="PREPARATION_FAILED", message=redact_secret_text(str(error)))
-        add_preparation_event(job_id, "job_failed", "failed", {"error_code": "PREPARATION_FAILED"})
+        update_job(job_id, status="failed", stage="failed", error_code=failure_error_code, message=redact_secret_text(str(error)))
+        add_preparation_event(job_id, "job_failed", "failed", {"error_code": failure_error_code})
     finally:
         finish_preparation_thread(job_id)

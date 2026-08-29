@@ -244,6 +244,33 @@ class GraphExtractionTests(unittest.TestCase):
         self.assertEqual(ollama_names, ["llm concept"])
         self.assertNotIn("llm concept", heuristic_names)
 
+    def test_job_edge_count_matches_edges_left_after_rejected_types_are_filtered(self):
+        transcript = store_transcript(
+            "kg-rejected-count", "video.vtt",
+            segments=[{"id": "segment-001", "start_seconds": 0, "end_seconds": 5, "text": "A influences B."}],
+            source="test",
+        )
+        job_id = self.make_job("kg-rejected-count")
+        with connect_db() as conn:
+            conn.execute(
+                "insert into kg_relation_types (relation_type, description, status, created_at) "
+                "values ('influences', 'influences', 'rejected', 'now')"
+            )
+        nodes = [make_node("node-a", "a"), make_node("node-b", "b")]
+        edges = [{
+            "edge_id": "edge-rejected", "source_node_id": "node-a", "target_node_id": "node-b",
+            "relation_type": "influences", "relation_status": "proposed", "confidence": 0.7,
+            "evidence_source_ids": [], "directional": 1,
+        }]
+
+        with mock.patch.object(graph_runner, "extract_graph_for_video", return_value=(nodes, edges, "heuristic")):
+            result = run_graph_extraction_for_transcript("kg-rejected-count", transcript["transcript_id"], job_id)
+
+        self.assertEqual(result["edge_count"], 0)
+        with connect_db() as conn:
+            persisted = conn.execute("select count(*) from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()[0]
+        self.assertEqual(persisted, 0)
+
     def test_extraction_failure_marks_graph_job_failed(self):
         transcript = store_transcript(
             "kg-video-4", "video.vtt",
@@ -359,7 +386,7 @@ class SaveNodesAndEdgesRelationStatusTests(unittest.TestCase):
             )
         job_id = "job-rs-rejected"
         self.make_job(job_id)
-        graph_store.save_nodes_and_edges(
+        persisted_edge_count = graph_store.save_nodes_and_edges(
             job_id, "video-rs", "transcript-rs",
             [make_node("node-a", "a"), make_node("node-b", "b")],
             [self.edge("edge-1", "reviewed_bad", relation_status="proposed", proposed_relation_description="x")],
@@ -367,6 +394,31 @@ class SaveNodesAndEdgesRelationStatusTests(unittest.TestCase):
         with connect_db() as conn:
             count = conn.execute("select count(*) from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()[0]
         self.assertEqual(count, 0)
+        self.assertEqual(persisted_edge_count, 0)
+
+    def test_built_in_type_is_repaired_to_approved_and_edge_accepted(self):
+        with connect_db() as conn:
+            conn.execute(
+                "insert into kg_relation_types (relation_type, description, status, proposed_by_job_id, created_at) "
+                "values ('causes', 'causes', 'rejected', 'old-job', 'now')"
+            )
+        job_id = "job-rs-built-in"
+        self.make_job(job_id)
+        persisted_edge_count = graph_store.save_nodes_and_edges(
+            job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("edge-1", "causes", relation_status="proposed")],
+        )
+        with connect_db() as conn:
+            type_row = conn.execute(
+                "select status, proposed_by_job_id from kg_relation_types where relation_type = 'causes'"
+            ).fetchone()
+            edge_row = conn.execute(
+                "select relation_status from kg_edges where extraction_job_id = ?", (job_id,)
+            ).fetchone()
+        self.assertEqual(dict(type_row), {"status": "approved", "proposed_by_job_id": None})
+        self.assertEqual(edge_row["relation_status"], "accepted")
+        self.assertEqual(persisted_edge_count, 1)
 
     def test_save_nodes_and_edges_rolls_back_entirely_on_edge_insert_failure(self):
         job_id = "job-rs-rollback"

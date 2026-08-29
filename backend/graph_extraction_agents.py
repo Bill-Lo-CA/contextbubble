@@ -32,6 +32,9 @@ RELATION_TYPE_SLUG_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 PROPOSE_PATTERN = re.compile(r"^propose:[a-z][a-z0-9_]{0,63}$")
 
 MAX_NODES_PER_WINDOW = 8
+MAX_CANONICAL_NAME_CHARS = 120
+MAX_NODE_SUMMARY_CHARS = 500
+MAX_PROPOSED_RELATION_DESCRIPTION_CHARS = 500
 # Cap on how many already-known nodes get projected into a later window's
 # prompt context, so prompt size stays bounded regardless of video length -
 # see canonical_node_name/llm_extract_graph for how this list is maintained.
@@ -212,14 +215,15 @@ def valid_node_candidate(candidate, window_segment_ids):
     if not isinstance(candidate, dict):
         return False
     name = candidate.get("canonical_name")
-    if not isinstance(name, str) or not name.strip() or word_count(name) > 6:
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > MAX_CANONICAL_NAME_CHARS or word_count(name) > 6:
         return False
     if candidate.get("node_type") not in NODE_TYPES:
         return False
-    if not isinstance(candidate.get("short_summary"), str) or word_count(candidate["short_summary"]) > 40:
+    summary = candidate.get("short_summary")
+    if not isinstance(summary, str) or len(summary) > MAX_NODE_SUMMARY_CHARS or word_count(summary) > 40:
         return False
     confidence = candidate.get("confidence")
-    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         return False
     segment_ids = candidate.get("evidence_segment_ids")
     if not isinstance(segment_ids, list) or not segment_ids:
@@ -256,9 +260,12 @@ def resolve_relation_type(raw_relation_type):
     candidate = raw_relation_type.strip()
     if candidate in RELATION_TYPES:
         return candidate, "accepted"
-    match = PROPOSE_PATTERN.match(candidate)
-    if match:
-        return candidate.split(":", 1)[1], "proposed"
+    if PROPOSE_PATTERN.match(candidate):
+        relation_type = candidate.split(":", 1)[1]
+        # A model may redundantly prefix a built-in type with `propose:`. Keep
+        # the controlled vocabulary authoritative so built-ins can never enter
+        # the review workflow or be rejected.
+        return relation_type, "accepted" if relation_type in RELATION_TYPES else "proposed"
     return None
 
 
@@ -286,14 +293,14 @@ Transcript segments:
 def valid_relation_candidate_shape(candidate, allowed_segment_ids):
     if not isinstance(candidate, dict):
         return False
-    if not isinstance(candidate.get("source_node"), str) or not candidate["source_node"].strip():
+    if not isinstance(candidate.get("source_node"), str) or not candidate["source_node"].strip() or len(candidate["source_node"].strip()) > MAX_CANONICAL_NAME_CHARS:
         return False
-    if not isinstance(candidate.get("target_node"), str) or not candidate["target_node"].strip():
+    if not isinstance(candidate.get("target_node"), str) or not candidate["target_node"].strip() or len(candidate["target_node"].strip()) > MAX_CANONICAL_NAME_CHARS:
         return False
     if not isinstance(candidate.get("relation_type"), str) or not candidate["relation_type"].strip():
         return False
     confidence = candidate.get("confidence")
-    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         return False
     segment_ids = candidate.get("evidence_source_ids")
     if not isinstance(segment_ids, list) or not segment_ids:
@@ -324,8 +331,9 @@ def llm_relation_agent(candidate_nodes, segments):
             continue
         relation_type, relation_status = resolved
         description = candidate.get("proposed_relation_description")
-        if relation_status == "proposed" and not (isinstance(description, str) and description.strip()):
-            continue
+        if relation_status == "proposed":
+            if not isinstance(description, str) or not description.strip() or len(description.strip()) > MAX_PROPOSED_RELATION_DESCRIPTION_CHARS:
+                continue
         endpoint_source_ids = {source["source_id"] for source in source_node.get("sources", [])} | \
             {source["source_id"] for source in target_node.get("sources", [])}
         evidence_source_ids = candidate["evidence_source_ids"]

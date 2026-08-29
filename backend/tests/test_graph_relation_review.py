@@ -1,9 +1,11 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -11,6 +13,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import config
+import api_routes
+from api_models import RelationTypeReviewRequest
 from db import connect_db, init_db
 from graph_store import list_relation_types, review_relation_type
 
@@ -125,6 +129,10 @@ class RelationTypeReviewTests(unittest.TestCase):
         self.seed_relation_type("influences", "rejected")
         self.assertEqual(review_relation_type("influences", "approve"), "conflict")
 
+    def test_built_in_relation_type_cannot_be_rejected_even_if_legacy_state_is_proposed(self):
+        self.seed_relation_type("causes", "proposed")
+        self.assertEqual(review_relation_type("causes", "reject"), "conflict")
+
     def test_missing_relation_type_returns_none(self):
         self.assertIsNone(review_relation_type("does_not_exist", "approve"))
 
@@ -155,13 +163,43 @@ class RelationTypeReviewTests(unittest.TestCase):
         self.assertEqual(type_row["status"], "proposed")
         self.assertEqual(edge_row["relation_status"], "proposed")
 
-    def test_normal_graph_reads_only_see_accepted_edges(self):
+    def test_reject_marks_previously_proposed_edges_rejected(self):
         self.seed_relation_type("influences", "proposed")
         self.seed_edge("influences", "proposed")
         review_relation_type("influences", "reject")
         with connect_db() as conn:
-            accepted = conn.execute("select count(*) from kg_edges where relation_status = 'accepted'").fetchone()[0]
-        self.assertEqual(accepted, 0)
+            status = conn.execute("select relation_status from kg_edges where edge_id = 'edge-1'").fetchone()[0]
+        self.assertEqual(status, "rejected")
+
+
+class RelationTypeReviewRouteTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def payload(response):
+        return json.loads(response.body)
+
+    async def test_review_requires_bearer_auth(self):
+        with mock.patch.object(api_routes, "valid_bearer_token", return_value=False):
+            response = await api_routes.review_relation_type_route("influences", mock.Mock(), authorization="bad")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_relation_type_routes_reject_invalid_input(self):
+        with mock.patch.object(api_routes, "valid_bearer_token", return_value=True):
+            invalid_status = await api_routes.relation_types(status="unknown", authorization="token")
+            invalid_slug = await api_routes.review_relation_type_route("Invalid!", mock.Mock(), authorization="token")
+        self.assertEqual(invalid_status.status_code, 400)
+        self.assertEqual(invalid_slug.status_code, 400)
+
+    async def test_review_maps_missing_and_conflicting_types(self):
+        body = RelationTypeReviewRequest(decision="approve")
+        cases = ((None, 404, "NOT_FOUND"), ("conflict", 409, "RELATION_TYPE_REVIEW_CONFLICT"))
+        for result, expected_status, expected_code in cases:
+            with self.subTest(result=result), \
+                 mock.patch.object(api_routes, "valid_bearer_token", return_value=True), \
+                 mock.patch.object(api_routes, "read_model", new=mock.AsyncMock(return_value=body)), \
+                 mock.patch.object(api_routes, "run_in_threadpool", new=mock.AsyncMock(return_value=result)):
+                response = await api_routes.review_relation_type_route("influences", mock.Mock(), authorization="token")
+            self.assertEqual(response.status_code, expected_status)
+            self.assertEqual(self.payload(response)["error_code"], expected_code)
 
 
 if __name__ == "__main__":

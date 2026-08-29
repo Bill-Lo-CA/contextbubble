@@ -3,20 +3,15 @@ import json
 
 from config import GEMINI_MODEL, GRAPH_EXTRACTION_MODE, GRAPH_VERSION, OLLAMA_MODEL, now_iso
 from db import connect_db
+from graph_extraction_agents import RELATION_TYPES
 
 
 def graph_extraction_pipeline_signature(extraction_mode=None, model=None):
-    # A single opaque, fixed-length token standing in for (GRAPH_VERSION, mode,
-    # model). Model values like Ollama's default "qwen3:8b" already contain ":",
-    # so a plain ":"-joined string before hashing is not enough on its own -
-    # ("ollama", "qwen3:8b") and ("ollama:qwen3", "8b") would concatenate to the
-    # identical string and hash identically. Length-prefix each field so the
-    # concatenation is unambiguous regardless of what characters a field contains.
     mode = extraction_mode or GRAPH_EXTRACTION_MODE
     resolved_model = model
     if resolved_model is None:
         resolved_model = {"gemini": GEMINI_MODEL, "ollama": OLLAMA_MODEL}.get(mode, "")
-    encoded = "".join(f"{len(field)}:{field}" for field in (GRAPH_VERSION, mode, resolved_model))
+    encoded = json.dumps([GRAPH_VERSION, mode, resolved_model], ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     return digest[:16]
 
@@ -143,33 +138,37 @@ def save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges):
                 for node in nodes for source in node.get("sources", [])
             ],
         )
-        # Reconcile each edge's tentative relation_status ("accepted" for fixed-
-        # vocabulary types, "proposed" for a fresh propose:<slug>) against any
-        # decision a reviewer has already made for that relation_type: a type
-        # already approved upgrades new edges straight to "accepted"; a type
-        # already rejected means the edge must not be created at all; a type
-        # still proposed (or brand new) keeps the edge "proposed".
-        tentatively_proposed_types = {edge["relation_type"] for edge in edges if edge.get("relation_status") == "proposed"}
+        # Reconcile every used type, not only tentative proposals. This also
+        # repairs legacy rows where a built-in type accidentally entered review.
+        used_relation_types = {edge["relation_type"] for edge in edges}
         existing_status = {}
-        if tentatively_proposed_types:
-            placeholders = ",".join("?" for _ in tentatively_proposed_types)
+        if used_relation_types:
+            placeholders = ",".join("?" for _ in used_relation_types)
             existing_status = {
                 row["relation_type"]: row["status"]
                 for row in conn.execute(
                     f"select relation_type, status from kg_relation_types where relation_type in ({placeholders})",
-                    list(tentatively_proposed_types),
+                    list(used_relation_types),
                 )
             }
+        built_in_types = used_relation_types & set(RELATION_TYPES)
+        existing_built_in_types = built_in_types & existing_status.keys()
+        conn.executemany(
+            "update kg_relation_types set status = 'approved', proposed_by_job_id = null where relation_type = ? and status != 'approved'",
+            [(relation_type,) for relation_type in existing_built_in_types],
+        )
+        existing_status.update({relation_type: "approved" for relation_type in existing_built_in_types})
 
         final_edges = []
         for edge in edges:
             relation_status = edge.get("relation_status", "accepted")
-            if relation_status == "proposed":
-                current = existing_status.get(edge["relation_type"])
-                if current == "rejected":
-                    continue
-                if current == "approved":
-                    relation_status = "accepted"
+            current = existing_status.get(edge["relation_type"])
+            if current == "rejected":
+                continue
+            if current == "approved":
+                relation_status = "accepted"
+            elif current == "proposed":
+                relation_status = "proposed"
             final_edges.append((edge, relation_status))
 
         # insert-or-ignore only relation_types with no existing row - insert-or-ignore
@@ -207,6 +206,7 @@ def save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges):
                 for edge, relation_status in final_edges
             ],
         )
+        return conn.execute("select count(*) from kg_edges where extraction_job_id = ?", (job_id,)).fetchone()[0]
 
 
 def clone_graph_snapshot(source_job_id, target_job_id, video_id, transcript_id, cache_key):
@@ -307,6 +307,8 @@ def review_relation_type(relation_type, decision, description=None):
         if not row:
             return None
         current_status = row["status"]
+        if decision == "reject" and relation_type in RELATION_TYPES:
+            return "conflict"
         if current_status not in ("proposed", target_status):
             return "conflict"
         if description:

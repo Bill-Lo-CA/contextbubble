@@ -41,8 +41,8 @@ def run_graph_extraction_for_transcript(video_id, transcript_id, job_id, force_r
             # so a later request under the same configured mode doesn't
             # mistake this heuristic result for an LLM one.
             cache_key = graph_extraction_cache_key(video_id, content_hash, actual_mode)
-        save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges)
-        update_extraction_job(job_id, cache_key=cache_key, status="ready", stage="ready", node_count=len(nodes), edge_count=len(edges), error_code=None, message=None)
+        persisted_edge_count = save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges)
+        update_extraction_job(job_id, cache_key=cache_key, status="ready", stage="ready", node_count=len(nodes), edge_count=persisted_edge_count, error_code=None, message=None)
         return extraction_job_payload(job_id)
     except Exception as error:
         values = {
