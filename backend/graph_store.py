@@ -211,7 +211,7 @@ def save_nodes_and_edges(job_id, video_id, transcript_id, nodes, edges):
 
 def clone_graph_snapshot(source_job_id, target_job_id, video_id, transcript_id, cache_key):
     with connect_db() as conn:
-        conn.execute("begin")
+        conn.execute("begin immediate")
         source = conn.execute(
             "select node_count, edge_count from kg_extraction_jobs where job_id = ?",
             (source_job_id,),
@@ -285,10 +285,25 @@ def clone_graph_snapshot(source_job_id, target_job_id, video_id, transcript_id, 
 def list_relation_types(status):
     with connect_db() as conn:
         rows = conn.execute(
-            """select rt.relation_type, rt.description, rt.status, rt.proposed_by_job_id,
-                      count(e.edge_id) as edge_count, count(distinct e.extraction_job_id) as job_count
+            """with latest_ready_jobs as (
+                   select jobs.job_id
+                   from kg_extraction_jobs jobs
+                   where jobs.status = 'ready'
+                     and not exists (
+                         select 1 from kg_extraction_jobs newer
+                         where newer.video_id = jobs.video_id and newer.status = 'ready'
+                           and (newer.updated_at > jobs.updated_at
+                                or (newer.updated_at = jobs.updated_at and newer.job_id > jobs.job_id))
+                     )
+               )
+               select rt.relation_type, rt.description, rt.status, rt.proposed_by_job_id,
+                      count(e.edge_id) as snapshot_edge_count,
+                      count(distinct e.extraction_job_id) as snapshot_job_count,
+                      count(case when latest.job_id is not null then e.edge_id end) as current_edge_count,
+                      count(distinct case when latest.job_id is not null then e.extraction_job_id end) as current_job_count
                from kg_relation_types rt
                left join kg_edges e on e.relation_type = rt.relation_type
+               left join latest_ready_jobs latest on latest.job_id = e.extraction_job_id
                where rt.status = ?
                group by rt.relation_type
                order by rt.created_at""",
@@ -302,7 +317,12 @@ def review_relation_type(relation_type, decision, description=None):
     # "conflict" (reversing an already-finalized opposite decision -> 409), or
     # a result dict (success, decision applied or already in that state -> 200).
     target_status = "approved" if decision == "approve" else "rejected"
+    if description is not None:
+        description = description.strip()
+        if not description:
+            raise ValueError("description must not be blank")
     with connect_db() as conn:
+        conn.execute("begin immediate")
         row = conn.execute("select status from kg_relation_types where relation_type = ?", (relation_type,)).fetchone()
         if not row:
             return None
@@ -311,7 +331,7 @@ def review_relation_type(relation_type, decision, description=None):
             return "conflict"
         if current_status not in ("proposed", target_status):
             return "conflict"
-        if description:
+        if description is not None:
             conn.execute(
                 "update kg_relation_types set status = ?, description = ? where relation_type = ?",
                 (target_status, description, relation_type),
@@ -320,11 +340,21 @@ def review_relation_type(relation_type, decision, description=None):
             conn.execute("update kg_relation_types set status = ? where relation_type = ?", (target_status, relation_type))
         if current_status == target_status:
             # Idempotent repeat of a decision already applied - no edges to touch.
-            return {"relation_type": relation_type, "status": target_status, "affected_edge_count": 0}
+            return {
+                "scope": "global", "relation_type": relation_type, "status": target_status,
+                "affected_edge_count": 0, "affected_job_count": 0,
+            }
+        affected_job_count = conn.execute(
+            "select count(distinct extraction_job_id) from kg_edges where relation_type = ? and relation_status = 'proposed'",
+            (relation_type,),
+        ).fetchone()[0]
         edge_relation_status = "accepted" if decision == "approve" else "rejected"
         cursor = conn.execute(
             "update kg_edges set relation_status = ?, updated_at = ? where relation_type = ? and relation_status = 'proposed'",
             (edge_relation_status, now_iso(), relation_type),
         )
         affected = cursor.rowcount
-    return {"relation_type": relation_type, "status": target_status, "affected_edge_count": affected}
+    return {
+        "scope": "global", "relation_type": relation_type, "status": target_status,
+        "affected_edge_count": affected, "affected_job_count": affected_job_count,
+    }

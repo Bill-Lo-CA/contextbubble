@@ -220,7 +220,7 @@ def valid_node_candidate(candidate, window_segment_ids):
     if candidate.get("node_type") not in NODE_TYPES:
         return False
     summary = candidate.get("short_summary")
-    if not isinstance(summary, str) or len(summary) > MAX_NODE_SUMMARY_CHARS or word_count(summary) > 40:
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_NODE_SUMMARY_CHARS or word_count(summary) > 40:
         return False
     confidence = candidate.get("confidence")
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
@@ -393,6 +393,8 @@ def llm_extract_graph(video_id, windows):
         window_node_ids.append(current_ids)
 
     edges_by_id = {}
+    directional_edges_by_pair = {}
+    conflicting_directional_pairs = set()
     pair_count = max(len(windows) - 1, 1) if windows else 0
     for index in range(pair_count):
         second_index = index + 1 if index + 1 < len(windows) else index
@@ -406,6 +408,17 @@ def llm_extract_graph(video_id, windows):
             if raw_edge["relation_type"] in UNDIRECTED_RELATION_TYPES:
                 source_id, target_id = sorted((source_id, target_id))
             edge_id = edge_id_for(source_id, target_id, raw_edge["relation_type"])
+            if raw_edge["relation_type"] not in UNDIRECTED_RELATION_TYPES:
+                pair_key = (*sorted((source_id, target_id)), raw_edge["relation_type"])
+                if pair_key in conflicting_directional_pairs:
+                    continue
+                prior_edge_id = directional_edges_by_pair.get(pair_key)
+                if prior_edge_id is not None and prior_edge_id != edge_id:
+                    edges_by_id.pop(prior_edge_id, None)
+                    directional_edges_by_pair.pop(pair_key)
+                    conflicting_directional_pairs.add(pair_key)
+                    continue
+                directional_edges_by_pair[pair_key] = edge_id
             existing = edges_by_id.get(edge_id)
             if existing:
                 # Same edge_id can only come from the same relation_type string,

@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import config
 import api_routes
+import graph_store
 from api_models import RelationTypeReviewRequest
 from db import connect_db, init_db
 from graph_store import list_relation_types, review_relation_type
@@ -71,14 +72,38 @@ class RelationTypeReviewTests(unittest.TestCase):
                 (job_id, edge_id, relation_type, relation_status),
             )
 
-    def test_list_relation_types_reports_edge_and_job_counts(self):
+    def mark_ready(self, job_id, updated_at):
+        with connect_db() as conn:
+            conn.execute(
+                "update kg_extraction_jobs set status = 'ready', stage = 'ready', updated_at = ? where job_id = ?",
+                (updated_at, job_id),
+            )
+
+    def test_list_relation_types_reports_snapshot_and_current_counts(self):
         self.seed_relation_type("influences", "proposed", proposed_by_job_id="job-1")
         self.seed_edge("influences", "proposed")
+        self.mark_ready("job-1", "2026-01-01T00:00:00Z")
         result = list_relation_types("proposed")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["relation_type"], "influences")
-        self.assertEqual(result[0]["edge_count"], 1)
-        self.assertEqual(result[0]["job_count"], 1)
+        self.assertEqual(result[0]["snapshot_edge_count"], 1)
+        self.assertEqual(result[0]["snapshot_job_count"], 1)
+        self.assertEqual(result[0]["current_edge_count"], 1)
+        self.assertEqual(result[0]["current_job_count"], 1)
+
+    def test_list_relation_types_current_counts_only_latest_ready_job_per_video(self):
+        self.seed_relation_type("influences", "proposed", proposed_by_job_id="job-1")
+        self.seed_edge("influences", "proposed")
+        self.seed_edge("influences", "proposed", edge_id="edge-2", job_id="job-2")
+        self.mark_ready("job-1", "2026-01-01T00:00:00Z")
+        self.mark_ready("job-2", "2026-01-02T00:00:00Z")
+
+        result = list_relation_types("proposed")[0]
+
+        self.assertEqual(result["snapshot_edge_count"], 2)
+        self.assertEqual(result["snapshot_job_count"], 2)
+        self.assertEqual(result["current_edge_count"], 1)
+        self.assertEqual(result["current_job_count"], 1)
 
     def test_list_relation_types_filters_by_status(self):
         self.seed_relation_type("influences", "proposed")
@@ -108,7 +133,9 @@ class RelationTypeReviewTests(unittest.TestCase):
                 result = review_relation_type("influences", decision)
 
                 self.assertEqual(result["status"], expected_status)
+                self.assertEqual(result["scope"], "global")
                 self.assertEqual(result["affected_edge_count"], expected_affected)
+                self.assertEqual(result["affected_job_count"], expected_affected)
                 with connect_db() as conn:
                     type_row = conn.execute("select status from kg_relation_types where relation_type = 'influences'").fetchone()
                     edge_row = conn.execute("select relation_status from kg_edges where edge_id = 'edge-1'").fetchone()
@@ -144,6 +171,11 @@ class RelationTypeReviewTests(unittest.TestCase):
             row = conn.execute("select description from kg_relation_types where relation_type = 'influences'").fetchone()
         self.assertEqual(row["description"], "updated wording")
 
+    def test_blank_description_is_rejected(self):
+        self.seed_relation_type("influences", "proposed")
+        with self.assertRaisesRegex(ValueError, "must not be blank"):
+            review_relation_type("influences", "approve", description="   ")
+
     def test_approve_transaction_rolls_back_type_change_if_edge_update_fails(self):
         self.seed_relation_type("influences", "proposed")
         self.seed_edge("influences", "proposed")
@@ -163,13 +195,26 @@ class RelationTypeReviewTests(unittest.TestCase):
         self.assertEqual(type_row["status"], "proposed")
         self.assertEqual(edge_row["relation_status"], "proposed")
 
-    def test_reject_marks_previously_proposed_edges_rejected(self):
+    def test_review_reserves_write_lock_before_reading_status(self):
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.side_effect = RuntimeError("stop after first statement")
+        with mock.patch.object(graph_store, "connect_db", return_value=connection), \
+             self.assertRaisesRegex(RuntimeError, "stop after first statement"):
+            review_relation_type("influences", "reject")
+        connection.execute.assert_called_once_with("begin immediate")
+
+    def test_global_reject_updates_proposed_edges_across_jobs(self):
         self.seed_relation_type("influences", "proposed")
         self.seed_edge("influences", "proposed")
-        review_relation_type("influences", "reject")
+        self.seed_edge("influences", "proposed", edge_id="edge-2", job_id="job-2")
+        result = review_relation_type("influences", "reject")
         with connect_db() as conn:
-            status = conn.execute("select relation_status from kg_edges where edge_id = 'edge-1'").fetchone()[0]
-        self.assertEqual(status, "rejected")
+            statuses = conn.execute("select relation_status from kg_edges order by extraction_job_id").fetchall()
+        self.assertEqual(result["scope"], "global")
+        self.assertEqual(result["affected_edge_count"], 2)
+        self.assertEqual(result["affected_job_count"], 2)
+        self.assertEqual([row["relation_status"] for row in statuses], ["rejected", "rejected"])
 
 
 class RelationTypeReviewRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -190,7 +235,7 @@ class RelationTypeReviewRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(invalid_slug.status_code, 400)
 
     async def test_review_maps_missing_and_conflicting_types(self):
-        body = RelationTypeReviewRequest(decision="approve")
+        body = RelationTypeReviewRequest(scope="global", decision="approve")
         cases = ((None, 404, "NOT_FOUND"), ("conflict", 409, "RELATION_TYPE_REVIEW_CONFLICT"))
         for result, expected_status, expected_code in cases:
             with self.subTest(result=result), \
@@ -200,6 +245,12 @@ class RelationTypeReviewRouteTests(unittest.IsolatedAsyncioTestCase):
                 response = await api_routes.review_relation_type_route("influences", mock.Mock(), authorization="token")
             self.assertEqual(response.status_code, expected_status)
             self.assertEqual(self.payload(response)["error_code"], expected_code)
+
+    async def test_relation_type_list_declares_global_scope(self):
+        with mock.patch.object(api_routes, "valid_bearer_token", return_value=True), \
+             mock.patch.object(api_routes, "run_in_threadpool", new=mock.AsyncMock(return_value=[])):
+            response = await api_routes.relation_types(authorization="token")
+        self.assertEqual(self.payload(response)["scope"], "global")
 
 
 if __name__ == "__main__":

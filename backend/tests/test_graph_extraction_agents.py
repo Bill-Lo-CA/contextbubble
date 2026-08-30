@@ -88,6 +88,7 @@ class ValidNodeCandidateTests(unittest.TestCase):
             "empty canonical_name": self.base_candidate(canonical_name="   "),
             "name too many words": self.base_candidate(canonical_name="a b c d e f g"),
             "name too many characters": self.base_candidate(canonical_name="x" * (graph_extraction_agents.MAX_CANONICAL_NAME_CHARS + 1)),
+            "blank summary": self.base_candidate(short_summary="   "),
             "summary too long": self.base_candidate(short_summary=" ".join(["word"] * 41)),
             "summary too many characters": self.base_candidate(short_summary="x" * (graph_extraction_agents.MAX_NODE_SUMMARY_CHARS + 1)),
             "not a dict": "not a dict",
@@ -224,6 +225,33 @@ class LlmExtractGraphNodeMergeTests(unittest.TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0]["confidence"], 0.9)
         self.assertEqual(edges[0]["evidence_source_ids"], ["segment-000", "segment-002"])
+
+    def test_opposite_directions_for_same_relation_type_drop_both_edges(self):
+        windows = [[segment(f"segment-{i:03d}", "t", i, i + 1)] for i in range(4)]
+        node_a_id = graph_extraction_agents.node_id_for("video-1", "A")
+        node_b_id = graph_extraction_agents.node_id_for("video-1", "B")
+
+        def fake_node_agent(window, known_nodes):
+            segment_id = window[0]["id"]
+            return [
+                {"canonical_name": "A", "node_type": "concept", "short_summary": "s", "confidence": 0.5, "evidence_segment_ids": [segment_id]},
+                {"canonical_name": "B", "node_type": "concept", "short_summary": "s", "confidence": 0.5, "evidence_segment_ids": [segment_id]},
+            ]
+
+        directions = [(node_a_id, node_b_id), (node_b_id, node_a_id), (node_a_id, node_b_id)]
+
+        def fake_relation_agent(candidate_nodes, segments):
+            source_id, target_id = directions.pop(0)
+            return [{
+                "source_node_id": source_id, "target_node_id": target_id, "relation_type": "prerequisite_for",
+                "relation_status": "accepted", "confidence": 0.8, "evidence_source_ids": [segments[0]["id"]],
+            }]
+
+        with mock.patch.object(graph_extraction_agents, "llm_node_candidate_agent", side_effect=fake_node_agent), \
+             mock.patch.object(graph_extraction_agents, "llm_relation_agent", side_effect=fake_relation_agent):
+            _, edges = graph_extraction_agents.llm_extract_graph("video-1", windows)
+
+        self.assertEqual(edges, [])
 
 
 class LlmRelationAgentValidationTests(unittest.TestCase):

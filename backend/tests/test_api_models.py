@@ -24,7 +24,18 @@ class ApiModelTests(unittest.TestCase):
 
     def test_relation_type_review_rejects_unknown_decision(self):
         with self.assertRaises(ValidationError):
-            RelationTypeReviewRequest(decision="maybe")
+            RelationTypeReviewRequest(scope="global", decision="maybe")
+
+    def test_relation_type_review_requires_explicit_global_scope(self):
+        for body in ({"decision": "approve"}, {"scope": "job", "decision": "approve"}):
+            with self.subTest(body=body), self.assertRaises(ValidationError):
+                RelationTypeReviewRequest(**body)
+
+    def test_relation_type_review_strips_description_and_rejects_blank(self):
+        body = RelationTypeReviewRequest(scope="global", decision="approve", description="  useful wording  ")
+        self.assertEqual(body.description, "useful wording")
+        with self.assertRaises(ValidationError):
+            RelationTypeReviewRequest(scope="global", decision="approve", description="   ")
 
     def test_expected_routes_are_registered(self):
         paths = {route.path for router in routers for route in router.routes}

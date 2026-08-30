@@ -119,6 +119,15 @@ class GraphExtractionTests(unittest.TestCase):
         self.assertEqual(dict(target_row), {"status": "failed", "stage": "failed", "error_code": "GRAPH_EXTRACTION_FAILED"})
         self.assertEqual(counts, [0] * 6)
 
+    def test_cache_clone_reserves_write_lock_before_reading_source(self):
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.side_effect = RuntimeError("stop after first statement")
+        with mock.patch.object(graph_store, "connect_db", return_value=connection), \
+             self.assertRaisesRegex(RuntimeError, "stop after first statement"):
+            graph_store.clone_graph_snapshot("source", "target", "video", "transcript", "cache")
+        connection.execute.assert_called_once_with("begin immediate")
+
     def test_graph_payload_parent_failure_overrides_child(self):
         transcript = store_transcript(
             "kg-parent-fail", "video.vtt",
@@ -396,11 +405,22 @@ class SaveNodesAndEdgesRelationStatusTests(unittest.TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(persisted_edge_count, 0)
 
-    def test_built_in_type_is_repaired_to_approved_and_edge_accepted(self):
+    def test_built_in_type_repair_does_not_mutate_old_snapshot_edge(self):
+        old_job_id = "old-job"
+        self.make_job(old_job_id)
+        graph_store.save_nodes_and_edges(
+            old_job_id, "video-rs", "transcript-rs",
+            [make_node("node-a", "a"), make_node("node-b", "b")],
+            [self.edge("old-edge", "causes")],
+        )
         with connect_db() as conn:
             conn.execute(
-                "insert into kg_relation_types (relation_type, description, status, proposed_by_job_id, created_at) "
-                "values ('causes', 'causes', 'rejected', 'old-job', 'now')"
+                "update kg_relation_types set status = 'rejected', proposed_by_job_id = ? where relation_type = 'causes'",
+                (old_job_id,),
+            )
+            conn.execute(
+                "update kg_edges set relation_status = 'rejected' where extraction_job_id = ?",
+                (old_job_id,),
             )
         job_id = "job-rs-built-in"
         self.make_job(job_id)
@@ -416,8 +436,12 @@ class SaveNodesAndEdgesRelationStatusTests(unittest.TestCase):
             edge_row = conn.execute(
                 "select relation_status from kg_edges where extraction_job_id = ?", (job_id,)
             ).fetchone()
+            old_edge_row = conn.execute(
+                "select relation_status from kg_edges where extraction_job_id = ?", (old_job_id,)
+            ).fetchone()
         self.assertEqual(dict(type_row), {"status": "approved", "proposed_by_job_id": None})
         self.assertEqual(edge_row["relation_status"], "accepted")
+        self.assertEqual(old_edge_row["relation_status"], "rejected")
         self.assertEqual(persisted_edge_count, 1)
 
     def test_save_nodes_and_edges_rolls_back_entirely_on_edge_insert_failure(self):

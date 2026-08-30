@@ -237,7 +237,7 @@ async def graph_job_events(job_id: str, authorization: str = Header("")):
 async def relation_types(status: str = "proposed", authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
     if status not in ("proposed", "approved", "rejected"): return error("BAD_REQUEST", "invalid status", 400)
-    return ok({"relation_types": await run_in_threadpool(list_relation_types, status)})
+    return ok({"scope": "global", "relation_types": await run_in_threadpool(list_relation_types, status)})
 
 
 @graph_router.post("/api/graph/relation-types/{relation_type}/review")
