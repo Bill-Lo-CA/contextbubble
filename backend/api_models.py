@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class PairRequest(BaseModel):
@@ -16,6 +16,12 @@ class PrepareVideoRequest(BaseModel):
 class GraphVideoRequest(BaseModel):
     force_refresh: bool = False
     demo_mode: bool = False
+
+
+class RelationTypeReviewRequest(BaseModel):
+    scope: Literal["global"]
+    decision: Literal["approve", "reject"]
+    description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] | None = None
 
 
 class SubtitleUploadRequest(BaseModel):

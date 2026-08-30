@@ -13,6 +13,8 @@ import analysis_store
 from asr_pipeline import mark_asr_chunk_completed
 from db import connect_db, init_db
 import preparation_jobs
+import preparation_runner
+from transcripts import store_transcript
 
 
 class PreparationJobTests(unittest.TestCase):
@@ -51,6 +53,27 @@ class PreparationJobTests(unittest.TestCase):
         self.assertNotEqual(job["job_id"], "old-job")
         self.assertEqual(job["status"], "queued")
         start.assert_called_once_with(job["job_id"])
+
+    def test_graph_failure_keeps_graph_specific_error_code_on_parent_job(self):
+        transcript = store_transcript(
+            "graph-failure", "video.vtt",
+            segments=[{"id": "segment-001", "start_seconds": 0, "end_seconds": 5, "text": "Graph extraction."}],
+            source="test",
+        )
+        with mock.patch.object(preparation_jobs, "start_preparation_thread"):
+            job = preparation_jobs.create_or_reuse_job(
+                "graph-failure", "intermediate", job_kind="graph_extraction"
+            )
+        with mock.patch.object(
+            preparation_runner, "transcript_for_job", return_value=(transcript, "test", 5)
+        ), mock.patch.object(
+            preparation_runner, "run_graph_extraction_for_transcript", side_effect=RuntimeError("boom")
+        ), mock.patch.object(preparation_runner, "finish_preparation_thread"):
+            preparation_runner.run_preparation_job(job["job_id"])
+
+        result = preparation_jobs.job_payload(job["job_id"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "GRAPH_EXTRACTION_FAILED")
 
 
 if __name__ == "__main__": unittest.main()

@@ -4,8 +4,9 @@ import time
 
 from analysis_store import analysis_result
 from semantic_splitter import semantic_sentence_entries
-from config import ANALYSIS_VERSION, GRAPH_VERSION, LEARNER_LEVELS, now_iso, validate_video_id
+from config import ANALYSIS_VERSION, LEARNER_LEVELS, now_iso, validate_video_id
 from db import connect_db
+from graph_store import graph_extraction_pipeline_signature
 from job_events import add_preparation_event
 from transcripts import load_transcript, sentence_entries
 
@@ -110,7 +111,7 @@ def create_or_reuse_job(video_id, learner_level, force_refresh=False, demo_mode=
                         and (preparation_jobs.status != 'ready' or kg_extraction_jobs.cache_key like ?)
                         order by preparation_jobs.created_at desc limit 1
                         """,
-                        (video_id, job_kind, source_policy, f"%:{GRAPH_VERSION}"),
+                        (video_id, job_kind, source_policy, f"%:{graph_extraction_pipeline_signature()}"),
                     ).fetchone()
                 if existing:
                     job_id = existing["job_id"]

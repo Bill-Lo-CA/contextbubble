@@ -22,6 +22,9 @@ localhost. The local pairing/token model is not production authentication.
   bounded stderr tails.
 - The bubble workflow defaults to `AGENT_MODE=heuristic`; set
   `AGENT_MODE=gemini` to use Gemini or `AGENT_MODE=ollama` to use Ollama.
+- Knowledge-graph extraction defaults to `GRAPH_EXTRACTION_MODE=heuristic`;
+  set `GRAPH_EXTRACTION_MODE=gemini` or `GRAPH_EXTRACTION_MODE=ollama` to
+  enable real LLM node/relation extraction.
 - Translation defaults to `TRANSLATION_MODE=ollama` with
   `TRANSLATION_MODEL=qwen3:8b`.
 - The Side Panel shows prepared sentence cards after analysis is ready and falls
