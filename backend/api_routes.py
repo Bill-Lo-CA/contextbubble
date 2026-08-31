@@ -182,7 +182,7 @@ async def create_analysis(request: Request, authorization: str = Header("")):
     if not transcript: return error("TRANSCRIPT_NOT_FOUND", "transcript not found", 404)
     if transcript.get("video_id") != body.video_id: return error("BAD_REQUEST", "transcript does not belong to this video", 400)
     try:
-        analysis = run_analysis_for_transcript(body.video_id, body.learner_level, body.transcript_id, body.force_refresh)
+        analysis = await run_in_threadpool(run_analysis_for_transcript, body.video_id, body.learner_level, body.transcript_id, body.force_refresh)
         return json_response({"analysis_id": analysis["analysis_id"], "status": analysis["status"]})
     except AgentProviderError as exc: return error(exc.error_code, str(exc), 502)
     except Exception as exc: return error("ANALYSIS_FAILED", str(exc), 500)
