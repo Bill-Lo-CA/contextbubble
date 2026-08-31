@@ -9,6 +9,8 @@ from providers import AgentProviderError
 from transcripts import load_transcript
 
 
+ANALYSIS_WINDOW_SECONDS = 90
+
 ANALYSES = {}
 
 
@@ -76,7 +78,7 @@ def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_re
 
     try:
         segments = transcript.get("segments", [])
-        candidates, metrics = concept_candidates(segments, learner_level)
+        candidates, metrics = concept_candidates(segments, learner_level, ANALYSIS_WINDOW_SECONDS)
         with connect_db() as conn:
             conn.execute("update analyses set stage = ?, updated_at = ? where analysis_id = ?", ("reviewing", now_iso(), analysis_id))
         reviewed = [reviewer_agent(candidate, segments, learner_level) for candidate in candidates]

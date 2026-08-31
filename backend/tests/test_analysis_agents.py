@@ -48,4 +48,45 @@ class AnalysisAgentTests(unittest.TestCase):
         )
 
 
+class TimeWindowsTests(unittest.TestCase):
+    def test_explicit_seconds_buckets_correctly(self):
+        segments = [
+            {"id": "s1", "start_seconds": 0, "end_seconds": 10, "text": "a"},
+            {"id": "s2", "start_seconds": 50, "end_seconds": 60, "text": "b"},
+            {"id": "s3", "start_seconds": 100, "end_seconds": 110, "text": "c"},
+        ]
+        windows = analysis_agents.time_windows(segments, seconds=60)
+        self.assertEqual([[segment["id"] for segment in window] for window in windows], [["s1", "s2"], ["s3"]])
+
+
+class ConceptCandidatesWindowSecondsTests(unittest.TestCase):
+    def test_window_seconds_is_forwarded_to_time_windows(self):
+        segments = [{"id": "s1", "start_seconds": 0, "end_seconds": 5, "text": "t"}]
+        with mock.patch.object(analysis_agents, "time_windows", return_value=[]) as time_windows_mock:
+            analysis_agents.concept_candidates(segments, "beginner", 45)
+        time_windows_mock.assert_called_once_with(segments, seconds=45)
+
+
+class SchemaForwardingTests(unittest.TestCase):
+    def test_llm_concept_agent_forwards_concept_schema(self):
+        fake_provider = mock.Mock()
+        fake_provider.generate_json.return_value = {"bubbles": []}
+        window = [{"id": "segment-1", "start_seconds": 0, "end_seconds": 5, "text": "t"}]
+        with mock.patch.object(analysis_agents, "resolve_provider", return_value=fake_provider):
+            analysis_agents.llm_concept_agent(window, "beginner")
+        self.assertEqual(fake_provider.generate_json.call_args.kwargs["schema"], analysis_agents.CONCEPT_SCHEMA)
+
+    def test_llm_reviewer_agent_forwards_review_schema(self):
+        fake_provider = mock.Mock()
+        fake_provider.generate_json.return_value = {"review_status": "accepted", "review_reason": "ok"}
+        candidate = {
+            "concept": "x", "anchor_segment_id": "segment-1", "source_segment_ids": ["segment-1"],
+            "start_seconds": 0, "short_explanation": "s", "expanded_explanation": "e", "confidence": 0.5,
+        }
+        segments = [{"id": "segment-1", "start_seconds": 0, "end_seconds": 5, "text": "t"}]
+        with mock.patch.object(analysis_agents, "resolve_provider", return_value=fake_provider):
+            analysis_agents.llm_reviewer_agent(candidate, segments, "beginner")
+        self.assertEqual(fake_provider.generate_json.call_args.kwargs["schema"], analysis_agents.REVIEW_SCHEMA)
+
+
 if __name__ == "__main__": unittest.main()
