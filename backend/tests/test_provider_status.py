@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
@@ -10,6 +11,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import config
 import providers
 
 
@@ -23,6 +25,9 @@ INITIAL_GEMINI_STATUS = {
     "last_message": "",
     "total_requests": 0,
     "total_failures": 0,
+    "last_invalid_response_length": None,
+    "last_invalid_response_sha256": None,
+    "last_json_error": None,
 }
 
 
@@ -121,6 +126,101 @@ class ProviderStatusTests(unittest.TestCase):
             providers.ollama_generate("prompt", "http://example.invalid", "qwen-test")
 
         self.assertEqual(captured["body"]["format"], "json")
+
+
+class BrokenInnerJsonResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return b'{"candidates":[{"content":{"parts":[{"text":"{not valid json"}]}}]}'
+
+
+class BrokenEnvelopeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return b"not json at all"
+
+
+class GeminiErrorClassificationTests(unittest.TestCase):
+    def setUp(self):
+        providers.GEMINI_STATUS.update(INITIAL_GEMINI_STATUS)
+
+    def test_5xx_is_classified_as_server_error(self):
+        error = HTTPError("https://example.invalid", 503, "Service Unavailable", {}, None)
+        with mock.patch.object(providers, "urlopen", side_effect=error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_SERVER_ERROR")
+
+    def test_4xx_other_than_429_401_403_stays_http_error(self):
+        error = HTTPError("https://example.invalid", 404, "Not Found", {}, None)
+        with mock.patch.object(providers, "urlopen", side_effect=error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_HTTP_ERROR")
+
+
+class GeminiInvalidResponseDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        providers.GEMINI_STATUS.update(INITIAL_GEMINI_STATUS)
+
+    def test_gemini_status_records_invalid_json_diagnostics_without_raw_content(self):
+        with mock.patch.object(providers, "urlopen", return_value=BrokenInnerJsonResponse()):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_INVALID_JSON")
+
+        status = providers.gemini_status("test-key", "gemini-test")
+        self.assertIsInstance(status["last_invalid_response_length"], int)
+        self.assertEqual(len(status["last_invalid_response_sha256"]), 64)
+        self.assertIn("line", status["last_json_error"])
+        self.assertNotIn("not valid json", json.dumps(status))
+
+        with mock.patch.object(providers, "urlopen", return_value=FakeResponse()):
+            providers.gemini_generate("{}", "test-key", "gemini-test")
+        status = providers.gemini_status("test-key", "gemini-test")
+        self.assertIsNone(status["last_invalid_response_length"])
+        self.assertIsNone(status["last_invalid_response_sha256"])
+        self.assertIsNone(status["last_json_error"])
+
+    def test_gemini_outer_envelope_decode_failure_raises_agent_provider_error(self):
+        with mock.patch.object(providers, "urlopen", return_value=BrokenEnvelopeResponse()):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_INVALID_RESPONSE")
+
+
+class DebugLogGatingTests(unittest.TestCase):
+    def setUp(self):
+        providers.GEMINI_STATUS.update(INITIAL_GEMINI_STATUS)
+
+    def test_debug_log_writes_only_when_flag_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "llm_debug.log"
+
+            with mock.patch.object(config, "DEBUG_LLM_RESPONSES", False), \
+                 mock.patch.object(config, "LLM_DEBUG_LOG_FILE", log_path), \
+                 mock.patch.object(providers, "urlopen", return_value=BrokenInnerJsonResponse()):
+                with self.assertRaises(providers.AgentProviderError):
+                    providers.gemini_generate("{}", "test-key", "gemini-test")
+            self.assertFalse(log_path.exists())
+
+            with mock.patch.object(config, "DEBUG_LLM_RESPONSES", True), \
+                 mock.patch.object(config, "LLM_DEBUG_LOG_FILE", log_path), \
+                 mock.patch.object(providers, "urlopen", return_value=BrokenInnerJsonResponse()):
+                with self.assertRaises(providers.AgentProviderError):
+                    providers.gemini_generate("{}", "test-key", "gemini-test")
+            self.assertTrue(log_path.exists())
+            self.assertIn("GEMINI_INVALID_JSON", log_path.read_text(encoding="utf-8"))
 
 
 class OllamaFakeResponse:
