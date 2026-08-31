@@ -226,6 +226,7 @@ class DockerComposeContractTest(unittest.TestCase):
         "TRANSCRIPT_BLOCK_SPLITTER_MODE": "${TRANSCRIPT_BLOCK_SPLITTER_MODE:-ollama}",
         "TRANSCRIPT_BLOCK_SPLITTER_MODEL": "${TRANSCRIPT_BLOCK_SPLITTER_MODEL:-llama3.2:3b}",
         "DEMO_VIDEO_IDS": "${DEMO_VIDEO_IDS:-}",
+        "CONTEXTBUBBLE_DEBUG_LLM_RESPONSES": "${CONTEXTBUBBLE_DEBUG_LLM_RESPONSES:-}",
     }
 
     def test_compose_declares_single_loopback_backend_service(self):
@@ -289,6 +290,7 @@ class DockerComposeContractTest(unittest.TestCase):
             "TRANSCRIPT_BLOCK_SPLITTER_MODE=ollama",
             "TRANSCRIPT_BLOCK_SPLITTER_MODEL=llama3.2:3b",
             "DEMO_VIDEO_IDS=",
+            "CONTEXTBUBBLE_DEBUG_LLM_RESPONSES=",
             "DOCKER_WHISPER_MODEL=/models/ggml-base.en.bin",
             "DOCKER_WHISPER_LANGUAGE=en",
         ):
@@ -322,6 +324,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn('CONTEXTBUBBLE_TOKEN: ""', rendered)
         self.assertIn('AGENT_MODE: "heuristic"', rendered)
         self.assertIn('GRAPH_EXTRACTION_MODE: "heuristic"', rendered)
+        self.assertIn('CONTEXTBUBBLE_DEBUG_LLM_RESPONSES: ""', rendered)
 
     def test_compose_fixes_cpu_mode_without_dotenv_override(self):
         compose = self.read_compose()
@@ -347,6 +350,7 @@ class DockerComposeContractTest(unittest.TestCase):
         self.assertIn('TRANSLATION_MODEL: "qwen3:8b"', rendered)
         self.assertIn('TRANSCRIPT_BLOCK_SPLITTER_MODE: "ollama"', rendered)
         self.assertIn('TRANSCRIPT_BLOCK_SPLITTER_MODEL: "llama3.2:3b"', rendered)
+        self.assertIn('CONTEXTBUBBLE_DEBUG_LLM_RESPONSES: ""', rendered)
 
     def test_multilingual_override_renders_as_one_coherent_tuple(self):
         expected = {

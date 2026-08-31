@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import time
 from urllib.error import HTTPError, URLError
@@ -59,16 +60,21 @@ def gemini_error(error):
 
 
 def _debug_log_llm_response(provider_name, error_code, text):
+    # Only the most recent failure is kept (overwrite, not append) - this is a
+    # point-in-time diagnostic aid, not an audit trail, and must not grow
+    # without bound since it can hold transcript/content-bearing text.
     if not config.DEBUG_LLM_RESPONSES:
         return
     try:
-        with open(config.LLM_DEBUG_LOG_FILE, "a", encoding="utf-8") as log_file:
+        log_path = config.LLM_DEBUG_LOG_FILE
+        with open(log_path, "w", encoding="utf-8") as log_file:
             log_file.write(json.dumps({
                 "time": time.time(),
                 "provider": provider_name,
                 "error_code": error_code,
                 "text": redact_secret_text(text)[:20000],
-            }) + "\n")
+            }))
+        os.chmod(log_path, 0o600)
     except OSError:
         pass
 
@@ -112,6 +118,9 @@ def gemini_generate(prompt, api_key, model, schema=None):
         status="requesting",
         last_request_at=time.time(),
         last_message="",
+        last_invalid_response_length=None,
+        last_invalid_response_sha256=None,
+        last_json_error=None,
         total_requests=GEMINI_STATUS["total_requests"] + 1,
     )
     try:
@@ -187,7 +196,11 @@ def ollama_generate(prompt, base_url, model, schema=None):
             payload = json.loads(response_text)
     except TimeoutError as error:
         raise AgentProviderError("OLLAMA_TIMEOUT") from error
-    except (HTTPError, URLError) as error:
+    except HTTPError as error:
+        if error.code >= 500:
+            raise AgentProviderError("OLLAMA_SERVER_ERROR") from error
+        raise AgentProviderError("OLLAMA_HTTP_ERROR") from error
+    except URLError as error:
         raise AgentProviderError("OLLAMA_UNAVAILABLE") from error
     except json.JSONDecodeError as error:
         _debug_log_llm_response("ollama", "OLLAMA_INVALID_RESPONSE", response_text)

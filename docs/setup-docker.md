@@ -60,6 +60,9 @@ chmod 600 .env
 - `TRANSCRIPT_BLOCK_SPLITTER_MODE` and `TRANSCRIPT_BLOCK_SPLITTER_MODEL`:
   provider and model used for semantic transcript block splitting.
 - `DEMO_VIDEO_IDS`: optional comma-separated fixture video IDs.
+- `CONTEXTBUBBLE_DEBUG_LLM_RESPONSES`: opt-in (blank by default); when set,
+  the most recent malformed Gemini/Ollama response is written to
+  `/data/llm_debug.log` for local debugging. Leave unset in normal use.
 
 This Compose service is CPU-only: it fixes `WHISPER_NO_GPU=1`, always forwards
 whisper.cpp's `-ng` flag, and does not offer a `.env` override. It also enables

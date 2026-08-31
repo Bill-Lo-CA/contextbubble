@@ -11,6 +11,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import auth
 import config
 import providers
 
@@ -169,6 +170,22 @@ class GeminiErrorClassificationTests(unittest.TestCase):
         self.assertEqual(raised.exception.error_code, "GEMINI_HTTP_ERROR")
 
 
+class OllamaErrorClassificationTests(unittest.TestCase):
+    def test_5xx_is_classified_as_server_error(self):
+        error = HTTPError("https://example.invalid", 503, "Service Unavailable", {}, None)
+        with mock.patch.object(providers, "urlopen", side_effect=error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.ollama_generate("prompt", "http://example.invalid", "qwen-test")
+        self.assertEqual(raised.exception.error_code, "OLLAMA_SERVER_ERROR")
+
+    def test_4xx_stays_http_error_and_is_not_retryable(self):
+        error = HTTPError("https://example.invalid", 404, "Not Found", {}, None)
+        with mock.patch.object(providers, "urlopen", side_effect=error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.ollama_generate("prompt", "http://example.invalid", "qwen-test")
+        self.assertEqual(raised.exception.error_code, "OLLAMA_HTTP_ERROR")
+
+
 class GeminiInvalidResponseDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         providers.GEMINI_STATUS.update(INITIAL_GEMINI_STATUS)
@@ -188,6 +205,27 @@ class GeminiInvalidResponseDiagnosticsTests(unittest.TestCase):
         with mock.patch.object(providers, "urlopen", return_value=FakeResponse()):
             providers.gemini_generate("{}", "test-key", "gemini-test")
         status = providers.gemini_status("test-key", "gemini-test")
+        self.assertIsNone(status["last_invalid_response_length"])
+        self.assertIsNone(status["last_invalid_response_sha256"])
+        self.assertIsNone(status["last_json_error"])
+
+    def test_invalid_json_diagnostics_do_not_survive_a_later_unrelated_failure(self):
+        # Regression guard: a retry sequence of "invalid JSON, then timeout"
+        # must not leave the invalid-JSON diagnostics attached to a status
+        # snapshot that now reports a completely different error.
+        with mock.patch.object(providers, "urlopen", return_value=BrokenInnerJsonResponse()):
+            with self.assertRaises(providers.AgentProviderError):
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertIsNotNone(providers.gemini_status("test-key", "gemini-test")["last_invalid_response_sha256"])
+
+        timeout_error = TimeoutError()
+        with mock.patch.object(providers, "urlopen", side_effect=timeout_error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_TIMEOUT")
+
+        status = providers.gemini_status("test-key", "gemini-test")
+        self.assertEqual(status["last_error_code"], "GEMINI_TIMEOUT")
         self.assertIsNone(status["last_invalid_response_length"])
         self.assertIsNone(status["last_invalid_response_sha256"])
         self.assertIsNone(status["last_json_error"])
@@ -221,6 +259,41 @@ class DebugLogGatingTests(unittest.TestCase):
                     providers.gemini_generate("{}", "test-key", "gemini-test")
             self.assertTrue(log_path.exists())
             self.assertIn("GEMINI_INVALID_JSON", log_path.read_text(encoding="utf-8"))
+
+    def test_debug_log_overwrites_previous_failure_instead_of_growing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "llm_debug.log"
+            with mock.patch.object(config, "DEBUG_LLM_RESPONSES", True), \
+                 mock.patch.object(config, "LLM_DEBUG_LOG_FILE", log_path):
+                for _ in range(3):
+                    with mock.patch.object(providers, "urlopen", return_value=BrokenInnerJsonResponse()):
+                        with self.assertRaises(providers.AgentProviderError):
+                            providers.gemini_generate("{}", "test-key", "gemini-test")
+            content = log_path.read_text(encoding="utf-8")
+            self.assertEqual(content.count("GEMINI_INVALID_JSON"), 1)
+
+    def test_debug_log_redacts_known_secrets(self):
+        class SecretLeakingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"candidates":[{"content":{"parts":[{"text":"{not valid json super-secret-token"}]}}]}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "llm_debug.log"
+            with mock.patch.object(auth, "API_TOKEN", "super-secret-token"), \
+                 mock.patch.object(config, "DEBUG_LLM_RESPONSES", True), \
+                 mock.patch.object(config, "LLM_DEBUG_LOG_FILE", log_path), \
+                 mock.patch.object(providers, "urlopen", return_value=SecretLeakingResponse()):
+                with self.assertRaises(providers.AgentProviderError):
+                    providers.gemini_generate("{}", "test-key", "gemini-test")
+            content = log_path.read_text(encoding="utf-8")
+            self.assertNotIn("super-secret-token", content)
+            self.assertIn("[redacted]", content)
 
 
 class OllamaFakeResponse:

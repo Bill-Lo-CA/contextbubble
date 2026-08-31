@@ -71,7 +71,7 @@ class GenerateJsonWithRetryTests(unittest.TestCase):
         self.assertEqual(provider.generate_json.call_count, provider_registry.MAX_PROVIDER_ATTEMPTS)
 
     def test_non_retryable_error_fails_immediately(self):
-        for error_code in ("GEMINI_AUTH_FAILED", "GEMINI_NOT_CONFIGURED"):
+        for error_code in ("GEMINI_AUTH_FAILED", "GEMINI_NOT_CONFIGURED", "OLLAMA_HTTP_ERROR"):
             with self.subTest(error_code):
                 provider = mock.Mock()
                 provider.generate_json.side_effect = AgentProviderError(error_code)
@@ -94,7 +94,7 @@ class GenerateJsonWithRetryTests(unittest.TestCase):
         self.assertEqual(provider.generate_json.call_count, 2)
 
     def test_ollama_error_codes_are_all_retryable(self):
-        for error_code in ("OLLAMA_TIMEOUT", "OLLAMA_UNAVAILABLE", "OLLAMA_INVALID_RESPONSE", "OLLAMA_INVALID_JSON"):
+        for error_code in ("OLLAMA_TIMEOUT", "OLLAMA_UNAVAILABLE", "OLLAMA_SERVER_ERROR", "OLLAMA_INVALID_RESPONSE", "OLLAMA_INVALID_JSON"):
             with self.subTest(error_code):
                 provider = mock.Mock()
                 provider.generate_json.side_effect = [AgentProviderError(error_code), {"ok": True}]
