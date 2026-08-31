@@ -49,4 +49,58 @@ class ProviderTransportTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
 
 
+class GenerateJsonWithRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.sleep_patcher = mock.patch.object(provider_registry.time, "sleep")
+        self.sleep_patcher.start()
+        self.addCleanup(self.sleep_patcher.stop)
+
+    def test_retries_transient_error_then_succeeds(self):
+        provider = mock.Mock()
+        provider.generate_json.side_effect = [AgentProviderError("GEMINI_RATE_LIMITED"), {"ok": True}]
+        result = provider_registry.generate_json_with_retry(provider, "prompt")
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(provider.generate_json.call_count, 2)
+
+    def test_retry_exhausted_raises_last_error(self):
+        provider = mock.Mock()
+        provider.generate_json.side_effect = AgentProviderError("GEMINI_TIMEOUT")
+        with self.assertRaises(AgentProviderError) as raised:
+            provider_registry.generate_json_with_retry(provider, "prompt")
+        self.assertEqual(raised.exception.error_code, "GEMINI_TIMEOUT")
+        self.assertEqual(provider.generate_json.call_count, provider_registry.MAX_PROVIDER_ATTEMPTS)
+
+    def test_non_retryable_error_fails_immediately(self):
+        for error_code in ("GEMINI_AUTH_FAILED", "GEMINI_NOT_CONFIGURED"):
+            with self.subTest(error_code):
+                provider = mock.Mock()
+                provider.generate_json.side_effect = AgentProviderError(error_code)
+                with self.assertRaises(AgentProviderError):
+                    provider_registry.generate_json_with_retry(provider, "prompt")
+                self.assertEqual(provider.generate_json.call_count, 1)
+
+    def test_http_400_only_retried_once(self):
+        provider = mock.Mock()
+        provider.generate_json.side_effect = AgentProviderError("GEMINI_HTTP_ERROR", "HTTP 400")
+        with self.assertRaises(AgentProviderError):
+            provider_registry.generate_json_with_retry(provider, "prompt")
+        self.assertEqual(provider.generate_json.call_count, 1)
+
+    def test_gemini_server_error_is_retried(self):
+        provider = mock.Mock()
+        provider.generate_json.side_effect = [AgentProviderError("GEMINI_SERVER_ERROR"), {"ok": True}]
+        result = provider_registry.generate_json_with_retry(provider, "prompt")
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(provider.generate_json.call_count, 2)
+
+    def test_ollama_error_codes_are_all_retryable(self):
+        for error_code in ("OLLAMA_TIMEOUT", "OLLAMA_UNAVAILABLE", "OLLAMA_INVALID_RESPONSE", "OLLAMA_INVALID_JSON"):
+            with self.subTest(error_code):
+                provider = mock.Mock()
+                provider.generate_json.side_effect = [AgentProviderError(error_code), {"ok": True}]
+                result = provider_registry.generate_json_with_retry(provider, "prompt")
+                self.assertEqual(result, {"ok": True})
+                self.assertEqual(provider.generate_json.call_count, 2)
+
+
 if __name__ == "__main__": unittest.main()
