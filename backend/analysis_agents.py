@@ -157,9 +157,15 @@ def valid_concept_candidate(candidate):
 def valid_reviewer_result(result):
     if not isinstance(result, dict):
         return False
-    if result.get("review_status") not in ("accepted", "revised", "rejected"):
+    status = result.get("review_status")
+    if status not in ("accepted", "revised", "rejected"):
         return False
     if "candidate" in result and not isinstance(result["candidate"], dict):
+        return False
+    # A "revised" verdict without a candidate would silently fall back to the
+    # original, unrevised candidate and still report success (see
+    # llm_reviewer_agent) - treat it as malformed instead.
+    if status == "revised" and not isinstance(result.get("candidate"), dict):
         return False
     return True
 

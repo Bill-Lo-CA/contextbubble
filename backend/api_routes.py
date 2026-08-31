@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Header, Request
@@ -5,7 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from analysis_store import analysis_result, run_analysis_for_transcript
+from analysis_store import analysis_id_for, analysis_result, run_analysis_for_transcript
 from api_models import AnalysisRequest, GraphVideoRequest, PairRequest, PrepareVideoRequest, RelationTypeReviewRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
 from auth import pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, GRAPH_EXTRACTION_MODE, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_video_id
@@ -171,6 +172,46 @@ async def translation_status(translation_job_id: str, authorization: str = Heade
     return ok(public_translation_job(job)) if job else error("NOT_FOUND", "missing", 404)
 
 
+# Duplicate direct /api/analyze calls for the same analysis_id all dispatch
+# through run_in_threadpool, whose worker pool is shared with every other
+# offloaded endpoint (preparation status, graph creation, ...). analysis_store
+# already serializes same-analysis_id runs with a lock, but blocking on that
+# lock from inside a threadpool worker would still tie up one worker per
+# waiting request. Coalesce here instead: only the first caller for a given
+# analysis_id dispatches to the threadpool; concurrent callers await the same
+# in-memory future, which suspends on the event loop without holding a worker.
+_ANALYSIS_INFLIGHT = {}
+
+
+async def run_analysis_coalesced(video_id, learner_level, transcript_id, force_refresh, transcript):
+    if force_refresh:
+        return await run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
+    analysis_id = analysis_id_for(video_id, learner_level, transcript)
+    existing = _ANALYSIS_INFLIGHT.get(analysis_id)
+    if existing is not None:
+        return await existing
+    future = asyncio.get_running_loop().create_future()
+    _ANALYSIS_INFLIGHT[analysis_id] = future
+    try:
+        result = await run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
+    except Exception as error:
+        future.set_exception(error)
+    else:
+        future.set_result(result)
+    finally:
+        _ANALYSIS_INFLIGHT.pop(analysis_id, None)
+        if not future.done():
+            # The leader itself was cancelled (e.g. a client disconnect)
+            # before resolving; unblock any followers instead of leaving
+            # them awaiting a future nobody will ever complete.
+            future.cancel()
+    # Await our own future (instead of re-raising/returning directly) so its
+    # result/exception is always retrieved even when no follower ever awaits
+    # it - otherwise asyncio logs "exception was never retrieved" on every
+    # solo failure.
+    return await future
+
+
 @analyses_router.post("/api/analyze")
 async def create_analysis(request: Request, authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
@@ -182,7 +223,7 @@ async def create_analysis(request: Request, authorization: str = Header("")):
     if not transcript: return error("TRANSCRIPT_NOT_FOUND", "transcript not found", 404)
     if transcript.get("video_id") != body.video_id: return error("BAD_REQUEST", "transcript does not belong to this video", 400)
     try:
-        analysis = await run_in_threadpool(run_analysis_for_transcript, body.video_id, body.learner_level, body.transcript_id, body.force_refresh)
+        analysis = await run_analysis_coalesced(body.video_id, body.learner_level, body.transcript_id, body.force_refresh, transcript)
         return json_response({"analysis_id": analysis["analysis_id"], "status": analysis["status"]})
     except AgentProviderError as exc: return error(exc.error_code, str(exc), 502)
     except Exception as exc: return error("ANALYSIS_FAILED", str(exc), 500)

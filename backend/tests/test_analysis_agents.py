@@ -48,6 +48,20 @@ class AnalysisAgentTests(unittest.TestCase):
         )
 
 
+class ValidReviewerResultTests(unittest.TestCase):
+    def test_revised_status_requires_a_candidate_object(self):
+        cases = (
+            ({"review_status": "revised", "review_reason": "r", "candidate": {"concept": "x"}}, True),
+            ({"review_status": "revised", "review_reason": "r"}, False),
+            ({"review_status": "revised", "review_reason": "r", "candidate": "not-a-dict"}, False),
+            ({"review_status": "accepted", "review_reason": "r"}, True),
+            ({"review_status": "rejected", "review_reason": "r"}, True),
+        )
+        for result, expected in cases:
+            with self.subTest(result=result):
+                self.assertEqual(analysis_agents.valid_reviewer_result(result), expected)
+
+
 class TimeWindowsTests(unittest.TestCase):
     def test_explicit_seconds_buckets_correctly(self):
         segments = [
@@ -75,6 +89,19 @@ class SchemaForwardingTests(unittest.TestCase):
         with mock.patch.object(analysis_agents, "resolve_provider", return_value=fake_provider):
             analysis_agents.llm_concept_agent(window, "beginner")
         self.assertEqual(fake_provider.generate_json.call_args.kwargs["schema"], analysis_agents.CONCEPT_SCHEMA)
+
+    def test_revised_without_candidate_is_rejected_not_silently_accepted(self):
+        fake_provider = mock.Mock()
+        fake_provider.generate_json.return_value = {"review_status": "revised", "review_reason": "needs a fix"}
+        candidate = {
+            "concept": "x", "anchor_segment_id": "segment-1", "source_segment_ids": ["segment-1"],
+            "start_seconds": 0, "short_explanation": "s", "expanded_explanation": "e", "confidence": 0.5,
+        }
+        segments = [{"id": "segment-1", "start_seconds": 0, "end_seconds": 5, "text": "t"}]
+        with mock.patch.object(analysis_agents, "resolve_provider", return_value=fake_provider):
+            reviewed = analysis_agents.llm_reviewer_agent(candidate, segments, "beginner")
+        self.assertEqual(reviewed["review_status"], "rejected")
+        self.assertEqual(reviewed["concept"], "x")
 
     def test_llm_reviewer_agent_forwards_review_schema(self):
         fake_provider = mock.Mock()

@@ -73,13 +73,22 @@ def analysis_result(analysis_id):
     ANALYSES[analysis_id] = result
     return result
 
+def analysis_cache_key(video_id, learner_level, content_hash):
+    return f"{video_id}:{content_hash}:{learner_level}:{ANALYSIS_VERSION}"
+
+
+def analysis_id_for(video_id, learner_level, transcript):
+    cache_key = analysis_cache_key(video_id, learner_level, transcript.get("content_hash", "fixture"))
+    return f"analysis-{hashlib.sha256(cache_key.encode()).hexdigest()[:12]}"
+
+
 def run_analysis_for_transcript(video_id, learner_level, transcript_id, force_refresh=False):
     transcript = load_transcript(transcript_id)
     if not transcript:
         raise FileNotFoundError("transcript not found")
     content_hash = transcript.get("content_hash", "fixture")
-    cache_key = f"{video_id}:{content_hash}:{learner_level}:{ANALYSIS_VERSION}"
-    analysis_id = f"analysis-{hashlib.sha256(cache_key.encode()).hexdigest()[:12]}"
+    cache_key = analysis_cache_key(video_id, learner_level, content_hash)
+    analysis_id = analysis_id_for(video_id, learner_level, transcript)
     existing = analysis_result(analysis_id)
     if existing and existing["status"] == "completed" and not force_refresh:
         return existing
