@@ -58,12 +58,14 @@ class CreateAnalysisRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(response_a.body), expected)
         self.assertEqual(json.loads(response_b.body), expected)
 
-    async def test_force_refresh_bypasses_coalescing(self):
+    async def test_concurrent_force_refresh_calls_are_coalesced(self):
+        release = asyncio.Event()
         call_count = 0
 
         async def fake_run_in_threadpool(func, *args):
             nonlocal call_count
             call_count += 1
+            await release.wait()
             return {"analysis_id": "shared-id", "status": "completed"}
 
         forced_body = AnalysisRequest(video_id="demo-video", learner_level="beginner", transcript_id="transcript-1", force_refresh=True)
@@ -71,12 +73,58 @@ class CreateAnalysisRouteTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(api_routes, "load_transcript", return_value=self.transcript), \
              mock.patch.object(api_routes, "run_in_threadpool", new=fake_run_in_threadpool), \
              mock.patch.object(api_routes, "require_auth", return_value=None):
+            task_a = asyncio.create_task(api_routes.create_analysis(mock.Mock(), authorization="token"))
+            task_b = asyncio.create_task(api_routes.create_analysis(mock.Mock(), authorization="token"))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(task_a, task_b)
+
+        self.assertEqual(call_count, 1, "concurrent force_refresh calls for the same analysis should coalesce")
+
+    async def test_force_refresh_and_normal_calls_do_not_share_a_dispatch(self):
+        call_count = 0
+
+        async def fake_run_in_threadpool(func, *args):
+            nonlocal call_count
+            call_count += 1
+            return {"analysis_id": "shared-id", "status": "completed"}
+
+        with mock.patch.object(api_routes, "run_in_threadpool", new=fake_run_in_threadpool):
             await asyncio.gather(
-                api_routes.create_analysis(mock.Mock(), authorization="token"),
-                api_routes.create_analysis(mock.Mock(), authorization="token"),
+                api_routes.run_analysis_coalesced("demo-video", "beginner", "transcript-1", False, self.transcript),
+                api_routes.run_analysis_coalesced("demo-video", "beginner", "transcript-1", True, self.transcript),
             )
 
-        self.assertEqual(call_count, 2, "force_refresh calls should not be coalesced")
+        self.assertEqual(call_count, 2, "force_refresh and normal requests must not share a dispatch")
+
+    async def test_cancelling_one_caller_does_not_break_the_shared_analysis_for_others(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_run_in_threadpool(func, *args):
+            started.set()
+            await release.wait()
+            return {"analysis_id": "shared-id", "status": "completed"}
+
+        with mock.patch.object(api_routes, "read_model", new=mock.AsyncMock(return_value=self.body)), \
+             mock.patch.object(api_routes, "load_transcript", return_value=self.transcript), \
+             mock.patch.object(api_routes, "run_in_threadpool", new=fake_run_in_threadpool), \
+             mock.patch.object(api_routes, "require_auth", return_value=None):
+            first = asyncio.create_task(api_routes.create_analysis(mock.Mock(), authorization="token"))
+            await started.wait()
+
+            second = asyncio.create_task(api_routes.create_analysis(mock.Mock(), authorization="token"))
+            await asyncio.sleep(0)  # let the second request join the shared, in-flight task
+
+            second.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await second
+
+            release.set()
+            first_response = await first
+
+        self.assertEqual(json.loads(first_response.body), {"analysis_id": "shared-id", "status": "completed"})
 
     async def test_concurrent_follower_receives_leaders_error_too(self):
         release = asyncio.Event()

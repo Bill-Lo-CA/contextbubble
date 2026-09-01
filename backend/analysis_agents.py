@@ -162,10 +162,11 @@ def valid_reviewer_result(result):
         return False
     if "candidate" in result and not isinstance(result["candidate"], dict):
         return False
-    # A "revised" verdict without a candidate would silently fall back to the
-    # original, unrevised candidate and still report success (see
-    # llm_reviewer_agent) - treat it as malformed instead.
-    if status == "revised" and not isinstance(result.get("candidate"), dict):
+    # A "revised" verdict needs an actually complete, valid candidate - an
+    # empty or partial dict would still pass isinstance() but would leave
+    # llm_reviewer_agent's merge silently keeping most of the original,
+    # unrevised fields while still reporting success.
+    if status == "revised" and not valid_concept_candidate(result.get("candidate")):
         return False
     return True
 

@@ -172,44 +172,43 @@ async def translation_status(translation_job_id: str, authorization: str = Heade
     return ok(public_translation_job(job)) if job else error("NOT_FOUND", "missing", 404)
 
 
-# Duplicate direct /api/analyze calls for the same analysis_id all dispatch
-# through run_in_threadpool, whose worker pool is shared with every other
-# offloaded endpoint (preparation status, graph creation, ...). analysis_store
-# already serializes same-analysis_id runs with a lock, but blocking on that
-# lock from inside a threadpool worker would still tie up one worker per
-# waiting request. Coalesce here instead: only the first caller for a given
-# analysis_id dispatches to the threadpool; concurrent callers await the same
-# in-memory future, which suspends on the event loop without holding a worker.
+# Duplicate /api/analyze calls for the same (analysis_id, force_refresh) all
+# dispatch through run_in_threadpool, whose worker pool is shared with every
+# other offloaded endpoint (preparation status, graph creation, ...).
+# analysis_store already serializes same-analysis_id runs with a lock, so
+# without coalescing here N duplicate requests would tie up N threadpool
+# workers all blocked on that one lock. force_refresh is part of the key (not
+# a bypass) so concurrent forced requests coalesce among themselves too,
+# without sharing a result with a concurrent non-forced request.
+#
+# Coalesce via a real asyncio.Task, awaited through asyncio.shield() by every
+# caller - including whichever caller happens to create it. Shielding is
+# required on all sides: if a caller awaited the task directly, cancelling
+# that caller's own request (e.g. a client disconnect) would cancel the
+# shared task itself (a Task cancels whatever it is currently awaiting), and
+# any other still-running caller would then hit InvalidStateError trying to
+# resolve an already-cancelled result - turning one caller's unrelated
+# cancellation into a fake failure for everyone sharing the same analysis.
 _ANALYSIS_INFLIGHT = {}
 
 
+def _forget_inflight(key, task):
+    if _ANALYSIS_INFLIGHT.get(key) is task:
+        _ANALYSIS_INFLIGHT.pop(key, None)
+    if not task.cancelled():
+        task.exception()  # retrieve it so asyncio never logs "exception was never retrieved"
+
+
 async def run_analysis_coalesced(video_id, learner_level, transcript_id, force_refresh, transcript):
-    if force_refresh:
-        return await run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
-    analysis_id = analysis_id_for(video_id, learner_level, transcript)
-    existing = _ANALYSIS_INFLIGHT.get(analysis_id)
-    if existing is not None:
-        return await existing
-    future = asyncio.get_running_loop().create_future()
-    _ANALYSIS_INFLIGHT[analysis_id] = future
-    try:
-        result = await run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
-    except Exception as error:
-        future.set_exception(error)
-    else:
-        future.set_result(result)
-    finally:
-        _ANALYSIS_INFLIGHT.pop(analysis_id, None)
-        if not future.done():
-            # The leader itself was cancelled (e.g. a client disconnect)
-            # before resolving; unblock any followers instead of leaving
-            # them awaiting a future nobody will ever complete.
-            future.cancel()
-    # Await our own future (instead of re-raising/returning directly) so its
-    # result/exception is always retrieved even when no follower ever awaits
-    # it - otherwise asyncio logs "exception was never retrieved" on every
-    # solo failure.
-    return await future
+    key = (analysis_id_for(video_id, learner_level, transcript), force_refresh)
+    task = _ANALYSIS_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.ensure_future(
+            run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
+        )
+        _ANALYSIS_INFLIGHT[key] = task
+        task.add_done_callback(lambda finished, key=key: _forget_inflight(key, finished))
+    return await asyncio.shield(task)
 
 
 @analyses_router.post("/api/analyze")

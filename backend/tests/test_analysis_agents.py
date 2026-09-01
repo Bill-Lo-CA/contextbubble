@@ -48,12 +48,22 @@ class AnalysisAgentTests(unittest.TestCase):
         )
 
 
+VALID_CANDIDATE = {
+    "concept": "x", "anchor_segment_id": "segment-1", "source_segment_ids": ["segment-1"],
+    "start_seconds": 0, "short_explanation": "s", "expanded_explanation": "e", "confidence": 0.5,
+}
+
+
 class ValidReviewerResultTests(unittest.TestCase):
-    def test_revised_status_requires_a_candidate_object(self):
+    def test_revised_status_requires_a_complete_valid_candidate(self):
         cases = (
-            ({"review_status": "revised", "review_reason": "r", "candidate": {"concept": "x"}}, True),
+            ({"review_status": "revised", "review_reason": "r", "candidate": VALID_CANDIDATE}, True),
             ({"review_status": "revised", "review_reason": "r"}, False),
             ({"review_status": "revised", "review_reason": "r", "candidate": "not-a-dict"}, False),
+            # A dict that passes isinstance() but is missing required fields
+            # must still be rejected - it is not a usable candidate.
+            ({"review_status": "revised", "review_reason": "r", "candidate": {"concept": "x"}}, False),
+            ({"review_status": "revised", "review_reason": "r", "candidate": {}}, False),
             ({"review_status": "accepted", "review_reason": "r"}, True),
             ({"review_status": "rejected", "review_reason": "r"}, True),
         )
@@ -102,6 +112,20 @@ class SchemaForwardingTests(unittest.TestCase):
             reviewed = analysis_agents.llm_reviewer_agent(candidate, segments, "beginner")
         self.assertEqual(reviewed["review_status"], "rejected")
         self.assertEqual(reviewed["concept"], "x")
+
+    def test_revised_with_incomplete_candidate_is_rejected_not_silently_accepted(self):
+        fake_provider = mock.Mock()
+        fake_provider.generate_json.return_value = {
+            "review_status": "revised", "review_reason": "needs a fix", "candidate": {"concept": "x"},
+        }
+        candidate = {
+            "concept": "x", "anchor_segment_id": "segment-1", "source_segment_ids": ["segment-1"],
+            "start_seconds": 0, "short_explanation": "s", "expanded_explanation": "e", "confidence": 0.5,
+        }
+        segments = [{"id": "segment-1", "start_seconds": 0, "end_seconds": 5, "text": "t"}]
+        with mock.patch.object(analysis_agents, "resolve_provider", return_value=fake_provider):
+            reviewed = analysis_agents.llm_reviewer_agent(candidate, segments, "beginner")
+        self.assertEqual(reviewed["review_status"], "rejected")
 
     def test_llm_reviewer_agent_forwards_review_schema(self):
         fake_provider = mock.Mock()
