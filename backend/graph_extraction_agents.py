@@ -3,7 +3,7 @@ import re
 
 from analysis_agents import transcript_for_prompt
 from config import GEMINI_MODEL, GRAPH_EXTRACTION_MODE, OLLAMA_MODEL
-from provider_registry import resolve_provider
+from provider_registry import generate_json_with_retry, resolve_provider
 from transcripts import word_count
 
 
@@ -183,10 +183,11 @@ def canonical_node_name(raw_name):
 
 
 def llm_generate(prompt, schema=None):
-    return resolve_provider(
+    provider = resolve_provider(
         GRAPH_EXTRACTION_MODE, gemini_model=GEMINI_MODEL, ollama_model=OLLAMA_MODEL,
         disabled_error_code="GRAPH_EXTRACTION_FAILED", disabled_message="no LLM provider selected",
-    ).generate_json(prompt, schema=schema)
+    )
+    return generate_json_with_retry(provider, prompt, schema=schema)
 
 
 def build_node_prompt(window, known_nodes):

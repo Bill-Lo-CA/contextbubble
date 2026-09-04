@@ -78,11 +78,14 @@ class Settings:
     transcript_block_splitter_mode: str
     transcript_block_splitter_model: str
     demo_video_ids: frozenset[str]
+    debug_llm_responses: bool
 
     @property
     def db_file(self): return self.data_dir / "contextbubble.sqlite3"
     @property
     def job_log_file(self): return self.data_dir / "jobs.log"
+    @property
+    def llm_debug_log_file(self): return self.data_dir / "llm_debug.log"
     @property
     def media_dir(self): return self.data_dir / "media"
 
@@ -116,6 +119,7 @@ def load_settings(environ=None, env_file=None):
         translation_model=values.get("TRANSLATION_MODEL", "qwen3:8b"), transcript_block_splitter_mode=values.get("TRANSCRIPT_BLOCK_SPLITTER_MODE", "ollama").lower(),
         transcript_block_splitter_model=values.get("TRANSCRIPT_BLOCK_SPLITTER_MODEL", "llama3.2:3b"),
         demo_video_ids=frozenset(item.strip() for item in values.get("DEMO_VIDEO_IDS", "").split(",") if item.strip()),
+        debug_llm_responses=values.get("CONTEXTBUBBLE_DEBUG_LLM_RESPONSES", "").lower() in TRUE_VALUES,
     )
 
 
@@ -158,7 +162,7 @@ def demo_fixture_path(video_id): return Path(__file__).resolve().parent / "fixtu
 def __getattr__(name):
     settings = get_settings()
     aliases = {"DATA_DIR": settings.data_dir, "DB_FILE": settings.db_file, "JOB_LOG_FILE": settings.job_log_file, "MEDIA_DIR": settings.media_dir,
-        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "ASR_PROVIDER": settings.asr_provider, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "GRAPH_EXTRACTION_MODE": settings.graph_extraction_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids,
-        "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v4", "GRAPH_VERSION": "kg-mvp-llm-v1", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
+        "YTDLP_CMD": settings.ytdlp_cmd, "FFMPEG_CMD": settings.ffmpeg_cmd, "FFPROBE_CMD": settings.ffprobe_cmd, "WHISPER_CMD": settings.whisper_cmd, "WHISPER_MODEL": settings.whisper_model, "WHISPER_NO_GPU": settings.whisper_no_gpu, "VALIDATE_ASR_ON_START": settings.validate_asr_on_start, "ASR_PROVIDER": settings.asr_provider, "WHISPER_LANGUAGE": settings.whisper_language, "BACKEND_HOST": settings.backend_host, "BACKEND_PORT": settings.backend_port, "GEMINI_API_KEY": settings.gemini_api_key, "GEMINI_MODEL": settings.gemini_model, "OLLAMA_BASE_URL": settings.ollama_base_url, "OLLAMA_MODEL": settings.ollama_model, "AGENT_MODE": settings.agent_mode, "GRAPH_EXTRACTION_MODE": settings.graph_extraction_mode, "TRANSLATION_MODE": settings.translation_mode, "TRANSLATION_MODEL": settings.translation_model, "TRANSCRIPT_BLOCK_SPLITTER_MODE": settings.transcript_block_splitter_mode, "TRANSCRIPT_BLOCK_SPLITTER_MODEL": settings.transcript_block_splitter_model, "DEMO_VIDEO_IDS": settings.demo_video_ids, "DEBUG_LLM_RESPONSES": settings.debug_llm_responses, "LLM_DEBUG_LOG_FILE": settings.llm_debug_log_file,
+        "API_VERSION": "2026-07-prepare-v1", "ANALYSIS_VERSION": "agent-mvp-gemini-v5", "GRAPH_VERSION": "kg-mvp-llm-v1", "LEARNER_LEVELS": {"beginner", "intermediate", "advanced"}, "AGENT_MODES": {"heuristic", "gemini", "ollama"}, "TRANSLATION_PROMPT_VERSION": "translation-v2", "TRANSCRIPT_BLOCK_SPLITTER_PROMPT_VERSION": "block-splitter-v1", "DEFAULT_CHUNK_SECONDS": 30, "CHUNK_OVERLAP_SECONDS": 2, "MAX_SUBTITLE_BYTES": 5 * 1024 * 1024, "MAX_JSON_BYTES": 32 * 1024, "MAX_BEARER_TOKEN_BYTES": 512}
     if name in aliases: return aliases[name]
     raise AttributeError(name)

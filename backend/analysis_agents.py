@@ -1,8 +1,39 @@
 import json
 
 from config import AGENT_MODE, GEMINI_MODEL, OLLAMA_MODEL
-from provider_registry import resolve_provider
+from provider_registry import generate_json_with_retry, resolve_provider
 from transcripts import truncate_words, word_count
+
+
+CONCEPT_CANDIDATE_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "concept": {"type": "string"},
+        "anchor_segment_id": {"type": "string"},
+        "source_segment_ids": {"type": "array", "items": {"type": "string"}},
+        "start_seconds": {"type": "number"},
+        "short_explanation": {"type": "string"},
+        "expanded_explanation": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["concept", "anchor_segment_id", "source_segment_ids", "start_seconds", "short_explanation", "expanded_explanation", "confidence"],
+}
+
+CONCEPT_SCHEMA = {
+    "type": "object",
+    "properties": {"bubbles": {"type": "array", "items": CONCEPT_CANDIDATE_ITEM_SCHEMA}},
+    "required": ["bubbles"],
+}
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "review_status": {"type": "string", "enum": ["accepted", "revised", "rejected"]},
+        "review_reason": {"type": "string"},
+        "candidate": CONCEPT_CANDIDATE_ITEM_SCHEMA,
+    },
+    "required": ["review_status", "review_reason"],
+}
 
 
 def transcript_for_prompt(segments):
@@ -22,7 +53,7 @@ def transcript_windows(segments, size=80, overlap=8):
             windows.append(window)
     return windows
 
-def time_windows(segments, seconds=30):
+def time_windows(segments, seconds):
     if not segments:
         return []
     windows = []
@@ -51,10 +82,11 @@ def context_segments(candidate, segments, radius=3):
     return [segment_by_id.get(segment["id"], segment) for segment in segments[start:end]]
 
 def llm_generate(prompt, schema=None):
-    return resolve_provider(
+    provider = resolve_provider(
         AGENT_MODE, gemini_model=GEMINI_MODEL, ollama_model=OLLAMA_MODEL,
         disabled_error_code="ANALYSIS_FAILED", disabled_message="no LLM provider selected",
-    ).generate_json(prompt, schema=schema)
+    )
+    return generate_json_with_retry(provider, prompt, schema=schema)
 
 def llm_concept_agent(segments, learner_level):
     prompt = f"""
@@ -65,13 +97,13 @@ Learner level: {learner_level}
 Find 3 to 8 concepts that matter for understanding this video and may need a short explanation for this learner.
 Use only transcript evidence. Every candidate must cite an anchor_segment_id that exists below.
 Choose timestamps from the anchor segment start_seconds only.
-Return JSON only: an array of objects with concept, anchor_segment_id, source_segment_ids, start_seconds, short_explanation, expanded_explanation, confidence.
+Return JSON only: {{"bubbles": [...]}} where each item has concept, anchor_segment_id, source_segment_ids, start_seconds, short_explanation, expanded_explanation, confidence.
 short_explanation <= 50 words. expanded_explanation <= 120 words.
 
 Transcript:
 {transcript_for_prompt(segments)}
 """
-    result = llm_generate(prompt)
+    result = llm_generate(prompt, schema=CONCEPT_SCHEMA)
     candidates = result if isinstance(result, list) else result.get("bubbles", [])
     return [candidate for candidate in candidates if valid_concept_candidate(candidate)]
 
@@ -93,7 +125,7 @@ Candidate:
 Transcript:
 {transcript_for_prompt(segments)}
 """
-    result = llm_generate(prompt)
+    result = llm_generate(prompt, schema=REVIEW_SCHEMA)
     if not valid_reviewer_result(result):
         return {**candidate, "review_status": "rejected", "review_reason": "Invalid reviewer response."}
     status = result.get("review_status", "rejected")
@@ -125,9 +157,16 @@ def valid_concept_candidate(candidate):
 def valid_reviewer_result(result):
     if not isinstance(result, dict):
         return False
-    if result.get("review_status") not in ("accepted", "revised", "rejected"):
+    status = result.get("review_status")
+    if status not in ("accepted", "revised", "rejected"):
         return False
     if "candidate" in result and not isinstance(result["candidate"], dict):
+        return False
+    # A "revised" verdict needs an actually complete, valid candidate - an
+    # empty or partial dict would still pass isinstance() but would leave
+    # llm_reviewer_agent's merge silently keeping most of the original,
+    # unrevised fields while still reporting success.
+    if status == "revised" and not valid_concept_candidate(result.get("candidate")):
         return False
     return True
 
@@ -174,9 +213,6 @@ def heuristic_reviewer_agent(candidate, segments, learner_level):
         "review_reason": "Grounded in transcript segment." if accepted else "Not grounded in transcript segment.",
     }
 
-def concept_agent(segments, learner_level):
-    return concept_candidates(segments, learner_level)[0]
-
 def window_note(window, learner_level):
     candidates = llm_concept_agent(window, learner_level) if AGENT_MODE in ("gemini", "ollama") else heuristic_concept_agent(window, learner_level)
     if not candidates and AGENT_MODE in ("gemini", "ollama"):
@@ -201,7 +237,7 @@ def synthesize_candidates(notes):
                 selected[concept] = candidate
     return sorted(selected.values(), key=lambda item: item.get("confidence", 0), reverse=True)[:24]
 
-def concept_candidates(segments, learner_level):
+def concept_candidates(segments, learner_level, window_seconds):
     if not segments:
         return [], {
             "transcript_segment_count": 0,
@@ -209,7 +245,7 @@ def concept_candidates(segments, learner_level):
             "candidates_per_window": [],
             "candidates_after_dedupe": 0,
         }
-    windows = time_windows(segments)
+    windows = time_windows(segments, seconds=window_seconds)
     notes = [window_note(window, learner_level) for window in windows]
     candidates = synthesize_candidates(notes)
     return candidates, {

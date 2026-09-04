@@ -44,7 +44,7 @@ class PreparationJobTests(unittest.TestCase):
         with connect_db() as conn:
             conn.execute("insert into videos (video_id, created_at, updated_at) values (?, ?, ?)", ("stale-analysis-demo", timestamp, timestamp))
             conn.execute("insert into transcript_sources (transcript_id, video_id, filename, source, content_hash, segment_count, metadata, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)", ("old-transcript", "stale-analysis-demo", "old.vtt", "youtube_caption", "old-hash", 0, "{}", timestamp))
-            conn.execute("insert into analyses (analysis_id, video_id, learner_level, transcript_id, cache_key, status, stage, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("old-analysis", "stale-analysis-demo", "beginner", "old-transcript", "stale-analysis-demo:old-hash:beginner:agent-mvp-gemini-v3", "completed", "ready", timestamp, timestamp))
+            conn.execute("insert into analyses (analysis_id, video_id, learner_level, transcript_id, cache_key, status, stage, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("old-analysis", "stale-analysis-demo", "beginner", "old-transcript", "stale-analysis-demo:old-hash:beginner:agent-mvp-gemini-v4", "completed", "ready", timestamp, timestamp))
             conn.execute("insert into preparation_jobs (job_id, video_id, learner_level, source_policy, status, stage, analysis_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", ("old-job", "stale-analysis-demo", "beginner", "live", "ready", "ready", "old-analysis", timestamp, timestamp))
 
         self.assertIsNone(analysis_store.analysis_result("old-analysis"))

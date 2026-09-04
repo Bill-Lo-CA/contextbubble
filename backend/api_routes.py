@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Header, Request
@@ -5,7 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from analysis_store import analysis_result, run_analysis_for_transcript
+from analysis_store import analysis_id_for, analysis_result, run_analysis_for_transcript
 from api_models import AnalysisRequest, GraphVideoRequest, PairRequest, PrepareVideoRequest, RelationTypeReviewRequest, SubtitleUploadRequest, TranscriptRequest, TranslationRequest
 from auth import pair_session, redact_secret_text, reset_pairing_code, valid_bearer_token
 from config import API_VERSION, AGENT_MODE, DEMO_VIDEO_IDS, GEMINI_API_KEY, GEMINI_MODEL, GRAPH_EXTRACTION_MODE, LEARNER_LEVELS, MAX_JSON_BYTES, MAX_SUBTITLE_BYTES, TRANSCRIPT_BLOCK_SPLITTER_MODE, TRANSLATION_MODE, TRANSLATION_MODEL, demo_fixture_path, iso_from_timestamp, validate_video_id
@@ -171,6 +172,45 @@ async def translation_status(translation_job_id: str, authorization: str = Heade
     return ok(public_translation_job(job)) if job else error("NOT_FOUND", "missing", 404)
 
 
+# Duplicate /api/analyze calls for the same (analysis_id, force_refresh) all
+# dispatch through run_in_threadpool, whose worker pool is shared with every
+# other offloaded endpoint (preparation status, graph creation, ...).
+# analysis_store already serializes same-analysis_id runs with a lock, so
+# without coalescing here N duplicate requests would tie up N threadpool
+# workers all blocked on that one lock. force_refresh is part of the key (not
+# a bypass) so concurrent forced requests coalesce among themselves too,
+# without sharing a result with a concurrent non-forced request.
+#
+# Coalesce via a real asyncio.Task, awaited through asyncio.shield() by every
+# caller - including whichever caller happens to create it. Shielding is
+# required on all sides: if a caller awaited the task directly, cancelling
+# that caller's own request (e.g. a client disconnect) would cancel the
+# shared task itself (a Task cancels whatever it is currently awaiting), and
+# any other still-running caller would then hit InvalidStateError trying to
+# resolve an already-cancelled result - turning one caller's unrelated
+# cancellation into a fake failure for everyone sharing the same analysis.
+_ANALYSIS_INFLIGHT = {}
+
+
+def _forget_inflight(key, task):
+    if _ANALYSIS_INFLIGHT.get(key) is task:
+        _ANALYSIS_INFLIGHT.pop(key, None)
+    if not task.cancelled():
+        task.exception()  # retrieve it so asyncio never logs "exception was never retrieved"
+
+
+async def run_analysis_coalesced(video_id, learner_level, transcript_id, force_refresh, transcript):
+    key = (analysis_id_for(video_id, learner_level, transcript), force_refresh)
+    task = _ANALYSIS_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.ensure_future(
+            run_in_threadpool(run_analysis_for_transcript, video_id, learner_level, transcript_id, force_refresh)
+        )
+        _ANALYSIS_INFLIGHT[key] = task
+        task.add_done_callback(lambda finished, key=key: _forget_inflight(key, finished))
+    return await asyncio.shield(task)
+
+
 @analyses_router.post("/api/analyze")
 async def create_analysis(request: Request, authorization: str = Header("")):
     if auth_error := require_auth(authorization): return auth_error
@@ -182,7 +222,7 @@ async def create_analysis(request: Request, authorization: str = Header("")):
     if not transcript: return error("TRANSCRIPT_NOT_FOUND", "transcript not found", 404)
     if transcript.get("video_id") != body.video_id: return error("BAD_REQUEST", "transcript does not belong to this video", 400)
     try:
-        analysis = run_analysis_for_transcript(body.video_id, body.learner_level, body.transcript_id, body.force_refresh)
+        analysis = await run_analysis_coalesced(body.video_id, body.learner_level, body.transcript_id, body.force_refresh, transcript)
         return json_response({"analysis_id": analysis["analysis_id"], "status": analysis["status"]})
     except AgentProviderError as exc: return error(exc.error_code, str(exc), 502)
     except Exception as exc: return error("ANALYSIS_FAILED", str(exc), 500)
