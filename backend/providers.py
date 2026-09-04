@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -30,10 +31,12 @@ GEMINI_STATUS = {
     "last_invalid_response_sha256": None,
     "last_json_error": None,
 }
+_DIAGNOSTICS_LOCK = threading.Lock()
 
 
 def gemini_status(api_key="", model=""):
-    status = dict(GEMINI_STATUS)
+    with _DIAGNOSTICS_LOCK:
+        status = dict(GEMINI_STATUS)
     status["configured"] = bool(api_key)
     status["model"] = model
     if not api_key:
@@ -41,12 +44,17 @@ def gemini_status(api_key="", model=""):
     return status
 
 
-def update_gemini_status(**updates):
-    GEMINI_STATUS.update(updates)
+def update_gemini_status(*, request_count=0, failure_count=0, **updates):
+    with _DIAGNOSTICS_LOCK:
+        GEMINI_STATUS["total_requests"] += request_count
+        GEMINI_STATUS["total_failures"] += failure_count
+        GEMINI_STATUS.update(updates)
 
 
 def gemini_error(error):
     if isinstance(error, HTTPError):
+        if error.code == 408:
+            return "GEMINI_TIMEOUT", "failed", error.code, "HTTP 408 Request Timeout"
         if error.code == 429:
             return "GEMINI_RATE_LIMITED", "rate_limited", error.code, "HTTP 429 Too Many Requests"
         if error.code in (401, 403):
@@ -67,16 +75,27 @@ def _debug_log_llm_response(provider_name, error_code, text):
         return
     try:
         log_path = config.LLM_DEBUG_LOG_FILE
-        with open(log_path, "w", encoding="utf-8") as log_file:
-            log_file.write(json.dumps({
-                "time": time.time(),
-                "provider": provider_name,
-                "error_code": error_code,
-                "text": redact_secret_text(text)[:20000],
-            }))
-        os.chmod(log_path, 0o600)
+        with _DIAGNOSTICS_LOCK:
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                log_file.write(json.dumps({
+                    "time": time.time(),
+                    "provider": provider_name,
+                    "error_code": error_code,
+                    "text": redact_secret_text(text)[:20000],
+                }))
+            os.chmod(log_path, 0o600)
     except OSError:
         pass
+
+
+def _gemini_invalid_response(message, response_text):
+    update_gemini_status(
+        status="failed", last_error_at=time.time(), last_error_code="GEMINI_INVALID_RESPONSE",
+        last_http_status=None, last_message=message, last_invalid_response_length=None,
+        last_invalid_response_sha256=None, last_json_error=None, failure_count=1,
+    )
+    _debug_log_llm_response("gemini", "GEMINI_INVALID_RESPONSE", response_text)
+    return AgentProviderError("GEMINI_INVALID_RESPONSE", message)
 
 
 def extract_json(text):
@@ -102,7 +121,10 @@ def gemini_generate(prompt, api_key, model, schema=None):
             last_error_code="GEMINI_NOT_CONFIGURED",
             last_http_status=None,
             last_message="GEMINI_API_KEY is not configured",
-            total_failures=GEMINI_STATUS["total_failures"] + 1,
+            last_invalid_response_length=None,
+            last_invalid_response_sha256=None,
+            last_json_error=None,
+            failure_count=1,
         )
         raise AgentProviderError("GEMINI_NOT_CONFIGURED", "GEMINI_API_KEY is not configured")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -121,7 +143,7 @@ def gemini_generate(prompt, api_key, model, schema=None):
         last_invalid_response_length=None,
         last_invalid_response_sha256=None,
         last_json_error=None,
-        total_requests=GEMINI_STATUS["total_requests"] + 1,
+        request_count=1,
     )
     try:
         with urlopen(request, timeout=90) as response:
@@ -135,21 +157,32 @@ def gemini_generate(prompt, api_key, model, schema=None):
             last_error_code=error_code,
             last_http_status=http_status,
             last_message=message,
-            total_failures=GEMINI_STATUS["total_failures"] + 1,
+            last_invalid_response_length=None,
+            last_invalid_response_sha256=None,
+            last_json_error=None,
+            failure_count=1,
         )
         raise AgentProviderError(error_code, message) from error
     except json.JSONDecodeError as error:
+        raise _gemini_invalid_response("Gemini returned a non-JSON response envelope", response_text) from error
+    if not isinstance(payload, dict):
+        raise _gemini_invalid_response("Gemini returned an invalid response envelope", response_text)
+    prompt_feedback = payload.get("promptFeedback")
+    block_reason = prompt_feedback.get("blockReason") if isinstance(prompt_feedback, dict) else None
+    if block_reason:
+        message = f"Gemini blocked the prompt: {block_reason}"
         update_gemini_status(
-            status="failed",
-            last_error_at=time.time(),
-            last_error_code="GEMINI_INVALID_RESPONSE",
-            last_http_status=None,
-            last_message="Gemini returned a non-JSON response envelope",
-            total_failures=GEMINI_STATUS["total_failures"] + 1,
+            status="failed", last_error_at=time.time(), last_error_code="GEMINI_BLOCKED",
+            last_http_status=None, last_message=message, last_invalid_response_length=None,
+            last_invalid_response_sha256=None, last_json_error=None, failure_count=1,
         )
-        _debug_log_llm_response("gemini", "GEMINI_INVALID_RESPONSE", response_text)
-        raise AgentProviderError("GEMINI_INVALID_RESPONSE", "Gemini returned a non-JSON response envelope") from error
-    parts = payload.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        raise AgentProviderError("GEMINI_BLOCKED", message)
+    candidates = payload.get("candidates")
+    candidate = candidates[0] if isinstance(candidates, list) and candidates else None
+    content = candidate.get("content") if isinstance(candidate, dict) else None
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list) or not all(isinstance(part, dict) and isinstance(part.get("text", ""), str) for part in parts):
+        raise _gemini_invalid_response("Gemini returned an invalid response envelope", response_text)
     text = "".join(part.get("text", "") for part in parts)
     try:
         result = extract_json(text)
@@ -163,7 +196,7 @@ def gemini_generate(prompt, api_key, model, schema=None):
             last_invalid_response_length=len(text),
             last_invalid_response_sha256=hashlib.sha256(text.encode()).hexdigest(),
             last_json_error={"message": error.msg, "line": error.lineno, "column": error.colno, "position": error.pos},
-            total_failures=GEMINI_STATUS["total_failures"] + 1,
+            failure_count=1,
         )
         _debug_log_llm_response("gemini", "GEMINI_INVALID_JSON", text)
         raise AgentProviderError("GEMINI_INVALID_JSON", "Gemini returned invalid JSON") from error
@@ -205,6 +238,9 @@ def ollama_generate(prompt, base_url, model, schema=None):
     except json.JSONDecodeError as error:
         _debug_log_llm_response("ollama", "OLLAMA_INVALID_RESPONSE", response_text)
         raise AgentProviderError("OLLAMA_INVALID_RESPONSE") from error
+    if not isinstance(payload, dict):
+        _debug_log_llm_response("ollama", "OLLAMA_INVALID_RESPONSE", response_text)
+        raise AgentProviderError("OLLAMA_INVALID_RESPONSE")
     text = payload.get("response")
     if not isinstance(text, str) or not text.strip():
         raise AgentProviderError("OLLAMA_INVALID_RESPONSE")

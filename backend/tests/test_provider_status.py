@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 import tempfile
@@ -43,6 +44,14 @@ class FakeResponse:
         return b'{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\": true}"}]}}]}'
 
 
+class RawResponse(FakeResponse):
+    def __init__(self, body):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+
 class ProviderStatusTests(unittest.TestCase):
     def setUp(self):
         providers.GEMINI_STATUS.update(INITIAL_GEMINI_STATUS)
@@ -69,6 +78,16 @@ class ProviderStatusTests(unittest.TestCase):
         self.assertEqual(status["status"], "rate_limited")
         self.assertEqual(status["last_http_status"], 429)
         self.assertEqual(status["last_error_code"], "GEMINI_RATE_LIMITED")
+
+    def test_gemini_status_counters_are_thread_safe(self):
+        def increment(_):
+            for _ in range(1000):
+                providers.update_gemini_status(request_count=1)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(increment, range(8)))
+
+        self.assertEqual(providers.gemini_status("test-key", "gemini-test")["total_requests"], 8000)
 
     def test_gemini_status_reports_success(self):
         with mock.patch.object(providers, "urlopen", return_value=FakeResponse()):
@@ -162,6 +181,13 @@ class GeminiErrorClassificationTests(unittest.TestCase):
                 providers.gemini_generate("{}", "test-key", "gemini-test")
         self.assertEqual(raised.exception.error_code, "GEMINI_SERVER_ERROR")
 
+    def test_408_is_classified_as_timeout(self):
+        error = HTTPError("https://example.invalid", 408, "Request Timeout", {}, None)
+        with mock.patch.object(providers, "urlopen", side_effect=error):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_TIMEOUT")
+
     def test_4xx_other_than_429_401_403_stays_http_error(self):
         error = HTTPError("https://example.invalid", 404, "Not Found", {}, None)
         with mock.patch.object(providers, "urlopen", side_effect=error):
@@ -235,6 +261,31 @@ class GeminiInvalidResponseDiagnosticsTests(unittest.TestCase):
             with self.assertRaises(providers.AgentProviderError) as raised:
                 providers.gemini_generate("{}", "test-key", "gemini-test")
         self.assertEqual(raised.exception.error_code, "GEMINI_INVALID_RESPONSE")
+
+    def test_gemini_blocked_prompt_raises_non_transient_error(self):
+        response = RawResponse(b'{"promptFeedback":{"blockReason":"SAFETY"}}')
+        with mock.patch.object(providers, "urlopen", return_value=response):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_BLOCKED")
+
+    def test_gemini_empty_candidates_is_invalid_response(self):
+        with mock.patch.object(providers, "urlopen", return_value=RawResponse(b'{"candidates":[]}')):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_INVALID_RESPONSE")
+
+    def test_gemini_non_object_envelope_is_invalid_response(self):
+        with mock.patch.object(providers, "urlopen", return_value=RawResponse(b'[]')):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.gemini_generate("{}", "test-key", "gemini-test")
+        self.assertEqual(raised.exception.error_code, "GEMINI_INVALID_RESPONSE")
+
+    def test_ollama_non_object_envelope_is_invalid_response(self):
+        with mock.patch.object(providers, "urlopen", return_value=RawResponse(b'[]')):
+            with self.assertRaises(providers.AgentProviderError) as raised:
+                providers.ollama_generate("prompt", "http://example.invalid", "qwen-test")
+        self.assertEqual(raised.exception.error_code, "OLLAMA_INVALID_RESPONSE")
 
 
 class DebugLogGatingTests(unittest.TestCase):
